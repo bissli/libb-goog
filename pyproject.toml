@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "libb-goog"
+version = "0.1.0"
+description = "Google API utilities for Calendar, Gmail, Drive, and Sheets"
+authors = ["bissli <bissli@xyz.com>"]
+readme = "README.md"
+packages = [{include = "goog", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+google-api-python-client = "*"
+google-auth = "*"
+gspread = "*"
+filetype = "*"
+tqdm = "*"
+libb-mail = { git = "https://github.com/bissli/libb-mail" }
+libb-util = { git = "https://github.com/bissli/libb-util" }
+
+[tool.poetry.group.dev.dependencies]
+pytest = "*"
+pytest-mock = "*"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
