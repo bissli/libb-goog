@@ -22,11 +22,8 @@ class Drive(Context):
     """Google Drive API client for file operations.
     """
 
-    def __init__(self, account: str | None = None, key: str | None = None,
-                 scopes: list[str] | None = None, version: str | None = None,
-                 root: str | None = None) -> None:
-        if root is not None:
-            logger.warning('root parameter is deprecated and ignored')
+    def __init__(self, account: str | None = None, key: str | None = None, scopes:
+                 list[str] | None = None, version: str | None = None) -> None:
         super().__init__(app='drive', account=account, key=key,
                          scopes=scopes, version=version)
 
