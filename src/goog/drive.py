@@ -144,7 +144,8 @@ class Drive(Context):
         logger.info(f'Moved {fname} to Drive folder {to_folder}')
 
     def write(self, filepath_or_data: str | bytes | io.IOBase, fname: str, folder: str,
-              mimetype: str | None = None, overwrite: bool = True) -> None:
+              mimetype: str | None = None, overwrite: bool = True,
+              mkdir_p: bool = False) -> None:
         """Write file to Google Drive.
         """
         self._validate_folder(folder)
@@ -166,7 +167,10 @@ class Drive(Context):
             raise AttributeError(f'Cannot resolve mimetype from {fname} and {filepath}')
         to_filepath = posixpath.join(folder, fname)
         self._protect(to_filepath, overwrite)
-        folderid = self.id(folder)
+        if mkdir_p and not self.exists(folder):
+            folderid = self._mkdir_p(folder)
+        else:
+            folderid = self.id(folder)
         if data:
             if isinstance(data, io.IOBase):
                 s = data
@@ -187,6 +191,39 @@ class Drive(Context):
                     pbar.update(progress - pbar.n)
         done = response
         logger.info(f"Wrote file: {done['name']} id: {done['id']} to Drive {folder}")
+
+    def _mkdir_p(self, folder: str) -> str:
+        """Create folder path recursively (like mkdir -p).
+        """
+        self._validate_folder(folder)
+        folder = folder.replace(os.sep, '/')
+        folder = posixpath.join(folder, '')
+        folders = list(filter(len, posixpath.normpath(folder).split('/')))
+        root, *subfolders = folders
+        settings = get_settings()
+        rootid_map = settings.get('rootid', {})
+        rootid = rootid_map.get(root)
+        if not rootid:
+            raise LookupError(f'Unknown Shared Drive {root}')
+        parent_id = rootid
+        current_path = f'/{root}'
+        for subfolder in subfolders:
+            current_path = posixpath.join(current_path, subfolder)
+            if self.exists(current_path):
+                parent_id = self.id(current_path)
+                logger.debug(f'Folder {current_path} already exists')
+                continue
+            meta = {
+                'name': subfolder,
+                'mimeType': 'application/vnd.google-apps.folder',
+                'parents': [parent_id]
+            }
+            created = self.cx.files().create(body=meta,
+                                             supportsAllDrives=True,
+                                             fields='id').execute()
+            parent_id = created['id']
+            logger.info(f'Created folder {current_path} with id {parent_id}')
+        return parent_id
 
     def _validate_folder(self, folder: str) -> None:
         """Validate that the topmost folder in the path is a known shared drive.
