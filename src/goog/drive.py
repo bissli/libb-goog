@@ -217,6 +217,8 @@ class Drive(Context):
         folder, fname = os.path.split(filepath)
         folder = posixpath.join(folder, '')
         folderid = self._resolve_folderid(folder)
+        if folderid is None:
+            return None
         fname = clean_filename(fname)
         query = f"name='{fname}' and '{folderid}' in parents"
         page_token = None
