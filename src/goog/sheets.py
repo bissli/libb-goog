@@ -59,7 +59,7 @@ def _fmt(x: Any) -> int | float | str | None:
 
     def pre(x):
         if x is None:
-            return None
+            return
         return str(x).strip()
 
     def chain(x):
@@ -67,7 +67,7 @@ def _fmt(x: Any) -> int | float | str | None:
 
     def post(x):
         if x is None:
-            return None
+            return
         try:
             typ = guess_type(x)
             if typ == float:
@@ -86,9 +86,7 @@ class Sheets:
     """
 
     def __init__(self, account: str | None = None, key: str | None = None,
-                 scopes: list[str] | None = None, root: str | None = None) -> None:
-        if root is not None:
-            logger.warning('root parameter is deprecated and ignored')
+                 scopes: list[str] | None = None, dx: Drive | None = None) -> None:
         settings = get_settings()
         if account is None:
             account = settings.get('account')
@@ -107,12 +105,15 @@ class Sheets:
         creds = creds.with_subject(account)
         auth = gspread.utils.convert_credentials(creds)
         self._gx = gspread.Client(auth)
-        self._dx = Drive(account=account, key=key, scopes=scopes)
+        self._dx = dx or Drive(account=account, key=key, scopes=scopes)
+        self._idcache: dict[str, str] = {}
 
     def _id(self, filepath: str) -> str:
-        """Get file ID from filepath.
+        """Get file ID from filepath (cached).
         """
-        return self._dx.id(filepath)
+        if filepath not in self._idcache:
+            self._idcache[filepath] = self._dx.id(filepath)
+        return self._idcache[filepath]
 
     def _exists(self, filepath: str) -> bool:
         """Check if file exists.
@@ -188,20 +189,27 @@ class Sheets:
         """
         assert header >= 1, 'Must include header row'
         skip = skip or header + 1
+
         worksheet = self.get_sheet(filepath)
         title = worksheet.title
         sheets = worksheet.worksheets()
+
         if sheetname:
             sheets = [s for s in sheets if s.title == sheetname]
             if not sheets:
                 logger.error(f'Unable to open {title}:{sheetname}')
                 return []
+
         sheet = sheets[0]
-        clean = lambda x: [_fmt(_) for _ in x]
-        strip = lambda x: [_.strip() for _ in x]
-        cols = strip(sheet.get(f'A{header}:ZZ{header}')[0])
+        cols = [_.strip() for _ in sheet.get(f'A{header}:ZZ{header}')[0]]
         data = sheet.get(f'A{skip}:ZZ{sheet.row_count}')
-        idict = [dict(list(zip(cols, clean(d)))) for d in data]
-        idict = [{k: v for k, v in d.items() if k} for d in idict]
-        logger.info(f'Built iterdict from {title}:{sheet.title}')
+
+        idict = []
+        for d in data:
+            clean = [_fmt(_) for _ in d]
+            row = dict(zip(cols, clean))
+            row = {k: v for k, v in row.items() if k}
+            idict.append(row)
+
+        logger.debug(f'Extracted {len(idict)} rows from {title}:{sheet.title}')
         return idict
