@@ -6,9 +6,10 @@ import mimetypes
 import os
 import posixpath
 from pathlib import Path
+from typing import Any
 
 import filetype
-from goog import Context, clean_filename, get_settings
+from goog.base import Context, clean_filename, get_settings
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from googleapiclient.http import MediaIoBaseUpload
 from tqdm import tqdm
@@ -101,7 +102,7 @@ class Drive(Context):
 
     def walk(self, folder: str = '/', recursive: bool = False,
              links: bool = False, ctime: bool = False, mtime: bool = False,
-             since: str | None = None, exclude_trashed: bool = True):
+             since: str | None = None, exclude_trashed: bool = True) -> Any:
         """List files in Drive folder by path, optionally recursive.
         """
         _fields = ['id', 'name', 'mimeType']

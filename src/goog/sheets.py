@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import gspread
-from goog import get_settings
+from goog.base import get_settings
 from goog.drive import Drive
 from google.oauth2 import service_account
 from googleapiclient.errors import HttpError
@@ -108,7 +108,7 @@ class Sheets:
         self._dx = dx or Drive(account=account, key=key, scopes=scopes)
         self._idcache: dict[str, str] = {}
 
-    def _id(self, filepath: str) -> str:
+    def id(self, filepath: str) -> str:
         """Get file ID from filepath (cached).
         """
         if filepath not in self._idcache:
@@ -120,8 +120,6 @@ class Sheets:
         """
         return self._dx.exists(filepath)
 
-    id = _id
-
     def _get_permission_id(self, filepath: str, user_email: str) -> str | None:
         """Get permission ID for a user email.
         """
@@ -131,7 +129,7 @@ class Sheets:
 
     @copydoc(gspread.Client.open_by_key)
     def open_by_key(self, filepath: str) -> gspread.Spreadsheet:
-        fileid = self._id(filepath)
+        fileid = self.id(filepath)
         return self._gx.open_by_key(fileid)
 
     get_sheet = open_by_key
@@ -158,19 +156,19 @@ class Sheets:
             if not overwrite:
                 raise ValueError(f'{title} exists in folder {newfolder} and overwrite set to False')
             self.del_spreadsheet(newpath)
-        self._gx.copy(self._id(filepath), title=title, copy_permissions=copy_permissions, folder_id=folder_id)
+        self._gx.copy(self.id(filepath), title=title, copy_permissions=copy_permissions, folder_id=folder_id)
 
     @rand_retry(x_times=3, exception=HttpError)
     @copydoc(gspread.Client.insert_permission)
     def insert_permission(self, filepath: str, value: str, perm_type: str, role: str,
                           notify: bool = False, email_message: bool = False,
                           with_link: bool = False) -> None:
-        fileid = self._id(filepath)
+        fileid = self.id(filepath)
         self._gx.insert_permission(fileid, value, perm_type, role, notify, email_message, with_link)
 
     @copydoc(gspread.Client.del_spreadsheet)
     def del_spreadsheet(self, filepath: str) -> None:
-        fileid = self._id(filepath)
+        fileid = self.id(filepath)
         self._gx.del_spreadsheet(fileid)
 
     @copydoc(gspread.Client.remove_permission)
@@ -180,7 +178,7 @@ class Sheets:
 
     @copydoc(gspread.Client.list_permissions)
     def list_permissions(self, filepath: str) -> list[dict[str, Any]]:
-        fileid = self._id(filepath)
+        fileid = self.id(filepath)
         return self._gx.list_permissions(fileid)
 
     def get_iterdict(self, filepath: str, header: int = 1, skip: int | None = None,

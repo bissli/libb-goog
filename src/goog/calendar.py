@@ -3,7 +3,7 @@
 import logging
 from typing import Any
 
-from goog import Context
+from goog.base import Context
 
 logger = logging.getLogger(__name__)
 
@@ -17,28 +17,28 @@ class Calendar(Context):
         super().__init__(app='calendar', account=account, key=key,
                          scopes=scopes, version=version)
 
-    def list_calendar(self, **kw) -> dict[str, Any]:
+    def list_calendar(self, **kw: Any) -> dict[str, Any]:
         """List calendars.
         """
         return self.cx.calendarList().list().execute()
 
-    def list_events(self, **kw) -> dict[str, Any]:
+    def list_events(self, **kw: Any) -> dict[str, Any]:
         """List calendar events.
         """
         return self.cx.events().list(**kw).execute()
 
-    def get_events(self, **kw) -> dict[str, Any]:
+    def get_events(self, **kw: Any) -> dict[str, Any]:
         """Get calendar events.
         """
         return self.cx.events().get(**kw).execute()
 
-    def delete_events(self, **kw) -> dict[str, Any]:
+    def delete_events(self, **kw: Any) -> dict[str, Any]:
         """Delete calendar events.
         """
         logger.info('Deleting calendar events')
         return self.cx.events().delete(**kw).execute()
 
-    def insert_events(self, **kw) -> dict[str, Any]:
+    def insert_events(self, **kw: Any) -> dict[str, Any]:
         """Insert calendar events.
         """
         logger.info('Creating calendar events')

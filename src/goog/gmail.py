@@ -14,7 +14,7 @@ from typing import Any
 
 import filetype
 from apiclient import errors
-from goog import Context, get_settings
+from goog.base import Context, get_settings
 
 import mail
 
@@ -30,7 +30,7 @@ class Gmail(Context, mail.MailClient):
         super().__init__(app='gmail', account=account, key=key,
                          scopes=scopes, version=version)
 
-    def _build_kw(self, **kw) -> dict[str, Any]:
+    def _build_kw(self, **kw: Any) -> dict[str, Any]:
         """Build Gmail search query from keyword arguments.
         """
         q = kw.get('q') or kw.get('query')
@@ -43,7 +43,7 @@ class Gmail(Context, mail.MailClient):
         """
         return self.cx.users().getProfile(userId=self.account).execute()
 
-    def list_emails(self, **kw) -> dict[str, Any]:
+    def list_emails(self, **kw: Any) -> dict[str, Any]:
         """Get email search result container, but don't pull actual emails.
         """
         token = kw.pop('token', None) or kw.pop('pageToken', None)
@@ -55,7 +55,7 @@ class Gmail(Context, mail.MailClient):
         logger.info(f"Total matched emails estimate: {res['resultSizeEstimate']}")
         return res
 
-    def get_emails(self, **kw) -> Generator[email.message.Message, None, None]:
+    def get_emails(self, **kw: Any) -> Generator[email.message.Message, None, None]:
         """Generate emails matching search criteria.
         """
         kw = self._build_kw(**kw)
@@ -80,7 +80,7 @@ class Gmail(Context, mail.MailClient):
             res = self.list_emails(**kw)
         logger.info('No more emails - exiting')
 
-    def mark_as(self, label: str, add: bool = False, **kw) -> None:
+    def mark_as(self, label: str, add: bool = False, **kw: Any) -> None:
         """Mark emails matching the search criteria with a Gmail label.
         """
         kw = self._build_kw(**kw)
