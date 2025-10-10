@@ -26,12 +26,30 @@ class Drive(Context):
                  list[str] | None = None, version: str | None = None) -> None:
         super().__init__(app='drive', account=account, key=key,
                          scopes=scopes, version=version)
+        settings = get_settings()
+        self._rootid = settings.get('rootid', {})
+        self._tmpdir = settings.get('tmpdir')
+
+    def _normalize_path(self, path: str, trailing_slash: bool = False) -> str:
+        """Normalize path to use forward slashes.
+        """
+        normalized = path.replace(os.sep, '/')
+        if trailing_slash:
+            normalized = posixpath.join(normalized, '')
+        return normalized
+
+    def _split_path(self, path: str) -> list[str]:
+        """Split path into component folders.
+        """
+        normalized = self._normalize_path(path)
+        return list(filter(len, posixpath.normpath(normalized).split('/')))
 
     def delete(self, filepath: str) -> None:
         """Permanently delete a file from Google Drive (files only, not folders).
         """
         fileid = self.id(filepath)
-        assert fileid, 'Can only delete a file, not a folder'
+        if not fileid:
+            raise ValueError('Can only delete a file, not a folder')
         self.cx.files().delete(fileId=fileid, supportsAllDrives=True).execute()
         logger.info(f'Deleted {filepath} from drive')
 
@@ -39,12 +57,12 @@ class Drive(Context):
         """Downloads a file from drive location to local directory.
         """
         if directory is None:
-            settings = get_settings()
-            directory = settings.get('tmpdir')
+            directory = self._tmpdir
             if directory is None:
                 raise ValueError('directory required when not configured')
         fileid = self.id(filepath)
-        assert fileid, 'Can only download a file, not a folder'
+        if not fileid:
+            raise ValueError('Can only download a file, not a folder')
         fname = Path(filepath).name
         topath = posixpath.join(Path(directory).resolve(), fname)
         with Path(topath).open('wb') as f:
@@ -53,9 +71,9 @@ class Drive(Context):
             while True:
                 try:
                     status, done = media.next_chunk()
-                except Exception as err:
-                    logger.exception('An error occured during download: %s', err)
-                    return
+                except Exception:
+                    logger.exception(f'Download failed for {fname}')
+                    raise
                 if status:
                     logger.info(f'Download Progress: {int(status.progress() * 100)}%')
                 if done:
@@ -67,7 +85,8 @@ class Drive(Context):
         """Opens file from drive location as a buffered i/o stream.
         """
         fileid = self.id(filepath)
-        assert fileid, 'Can only read a file, not a folder'
+        if not fileid:
+            raise ValueError('Can only read a file, not a folder')
         s = io.BytesIO()
         request = self.cx.files().get_media(fileId=fileid)
         media = MediaIoBaseDownload(s, request)
@@ -80,14 +99,11 @@ class Drive(Context):
         logger.info(f'Downloaded file {Path(filepath).name}')
         return s
 
-    def walk(self, folder: str = '/', recursive: bool = False, **kw):
+    def walk(self, folder: str = '/', recursive: bool = False,
+             links: bool = False, ctime: bool = False, mtime: bool = False,
+             since: str | None = None, exclude_trashed: bool = True):
         """List files in Drive folder by path, optionally recursive.
         """
-        links = kw.get('links')
-        ctime = kw.get('ctime')
-        mtime = kw.get('mtime')
-        since = kw.get('since')
-        exclude_trashed = kw.get('exclude_trashed', True)
         _fields = ['id', 'name', 'mimeType']
         if links:
             _fields.append('webContentLink')
@@ -106,13 +122,15 @@ class Drive(Context):
         while True:
             param = dict(q=q, fields=fields, pageToken=tok, **SHARED_DRIVE_EXTRA)
             resp = self.cx.files().list(**param).execute()
-            files = resp.get('files') or []
+            files = resp['files']
             logger.info(f'Returned {len(files)} items from {folder}')
             for f in files:
                 filepath = posixpath.join(folder, f['name'])
                 is_folder = f['mimeType'] == 'application/vnd.google-apps.folder'
                 if is_folder and recursive:
-                    yield from self.walk(filepath, recursive=True, **kw)
+                    yield from self.walk(filepath, recursive=True, links=links,
+                                         ctime=ctime, mtime=mtime, since=since,
+                                         exclude_trashed=exclude_trashed)
                 elif not is_folder:
                     yield filepath
             tok = resp.get('nextPageToken')
@@ -125,7 +143,8 @@ class Drive(Context):
         """Move file from google filepath to new parent folder.
         """
         folder, fname = os.path.split(filepath)
-        assert fname, 'Only suitable for moving files, not folders'
+        if not fname:
+            raise ValueError('Only suitable for moving files, not folders')
         folderid = self.id(folder)
         fileid = self.id(filepath)
         to_folderid = self.id(to_folder)
@@ -164,7 +183,7 @@ class Drive(Context):
             logger.warning(f'Unable to guess mimetype of file name {fname}, trying again')
             mimetype = filetype.guess_mime(filepath)
         if not mimetype:
-            raise AttributeError(f'Cannot resolve mimetype from {fname} and {filepath}')
+            raise ValueError(f'Cannot resolve mimetype from {fname} and {filepath}')
         to_filepath = posixpath.join(folder, fname)
         self._protect(to_filepath, overwrite)
         if mkdir_p and not self.exists(folder):
@@ -196,13 +215,9 @@ class Drive(Context):
         """Create folder path recursively (like mkdir -p).
         """
         self._validate_folder(folder)
-        folder = folder.replace(os.sep, '/')
-        folder = posixpath.join(folder, '')
-        folders = list(filter(len, posixpath.normpath(folder).split('/')))
+        folders = self._split_path(folder)
         root, *subfolders = folders
-        settings = get_settings()
-        rootid_map = settings.get('rootid', {})
-        rootid = rootid_map.get(root)
+        rootid = self._rootid.get(root)
         if not rootid:
             raise LookupError(f'Unknown Shared Drive {root}')
         parent_id = rootid
@@ -228,11 +243,11 @@ class Drive(Context):
     def _validate_folder(self, folder: str) -> None:
         """Validate that the topmost folder in the path is a known shared drive.
         """
-        folder = (folder or '').replace(os.sep, '/')
-        base, *_ = filter(len, posixpath.normpath(folder).split('/'))
-        settings = get_settings()
-        rootid = settings.get('rootid', {})
-        if base not in rootid:
+        folders = self._split_path(folder or '')
+        if not folders:
+            return
+        base = folders[0]
+        if base not in self._rootid:
             raise LookupError(f'Unknown Shared Drive {base}')
 
     def _protect(self, filepath: str, overwrite: bool = False) -> None:
@@ -246,13 +261,13 @@ class Drive(Context):
             logger.info(f'Overwriting existing {filepath}')
             self.delete(filepath)
             return
-        raise Exception(f'{filepath} already exists')
+        raise FileExistsError(f'{filepath} already exists')
 
     def _resolve_fileid(self, filepath: str) -> str | None:
         """Resolve file ID from filepath.
         """
         folder, fname = os.path.split(filepath)
-        folder = posixpath.join(folder, '')
+        folder = self._normalize_path(folder, trailing_slash=True)
         folderid = self._resolve_folderid(folder)
         if folderid is None:
             return None
@@ -268,9 +283,9 @@ class Drive(Context):
                 **SHARED_DRIVE_EXTRA,
             )
             response = self.cx.files().list(**param).execute()
-            for f in response.get('files', []):
-                logger.debug(f"Found file: {f.get('name')}")
-                return f.get('id')
+            for f in response['files']:
+                logger.debug(f"Found file: {f['name']}")
+                return f['id']
             page_token = response.get('nextPageToken', None)
             if page_token is None:
                 break
@@ -279,48 +294,49 @@ class Drive(Context):
         """Resolve folder ID by walking from root down to target folder.
         """
         folder, _ = os.path.split(folderpath)
-        folder = posixpath.join(folder, '')
+        folder = self._normalize_path(folder, trailing_slash=True)
         self._validate_folder(folder)
-        settings = get_settings()
-        rootid_map = settings.get('rootid', {})
-        if not folder or folder == '/' or folder.replace('/', '') in rootid_map:
+
+        if not folder or folder == '/' or folder.replace('/', '') in self._rootid:
             logger.debug('Searching root path...')
             if folder:
                 folder = folder.replace('/', '')
-            return rootid_map.get(folder)
-        folders = list(filter(len, posixpath.normpath(folder).split('/')))
+            return self._rootid.get(folder)
+
+        folders = self._split_path(folder)
         root, *folders = folders
-        rootid = rootid_map.get(root)
+        rootid = self._rootid.get(root)
         folderid = rootid
 
-        def _walk(folder, folderid):
+        for _folder in folders:
             mimetype = 'application/vnd.google-apps.folder'
-            q = f"name='{folder}' and mimeType='{mimetype}' and '{folderid}' in parents"
-            page_token = None
+            q = f"name='{_folder}' and mimeType='{mimetype}' and '{folderid}' in parents"
+            tok = None
+            found_id = None
+
             while True:
                 param = dict(
                     q=q,
                     spaces='drive',
                     fields='nextPageToken, files(id, name)',
-                    pageToken=page_token,
+                    pageToken=tok,
                     **SHARED_DRIVE_EXTRA,
                 )
-                response = self.cx.files().list(**param).execute()
-                for f in response.get('files', []):
-                    logger.info(f"Found folder: {f.get('name')}")
-                    return f.get('id')
-                page_token = response.get('nextPageToken', None)
-                if page_token is None:
+                resp = self.cx.files().list(**param).execute()
+                for f in resp['files']:
+                    logger.info(f"Found folder: {f['name']}")
+                    found_id = f['id']
                     break
-            logger.debug(f'No more children, returning folder {folder}')
-            return folderid
 
-        for _folder in folders:
-            _folderid = _walk(_folder, folderid)
-            if folderid == _folderid:
-                logger.debug(f'Could not locate folder {folder}')
-                return
-            folderid = _folderid
+                if found_id or resp.get('nextPageToken') is None:
+                    break
+                tok = resp['nextPageToken']
+
+            if not found_id:
+                logger.debug(f'Could not locate folder {_folder}')
+                return None
+
+            folderid = found_id
 
         logger.debug(f'Found folder {folder} with folderid {folderid}')
         return folderid
@@ -328,14 +344,16 @@ class Drive(Context):
     def id(self, filepath: str) -> str:
         """Get drive file id for a given full file path.
         """
-        filepath = filepath.replace(os.sep, '/')
+        filepath = self._normalize_path(filepath)
         folder, fname = os.path.split(filepath)
+
         if fname:
             fileid = self._resolve_fileid(filepath)
             if not fileid:
                 raise LookupError(f'No such file {fname} in folder {folder}')
             return fileid
-        folder = posixpath.join(folder, '')
+
+        folder = self._normalize_path(folder, trailing_slash=True)
         folderid = self._resolve_folderid(folder)
         if not folderid:
             raise LookupError(f'No such folder {folder}')
