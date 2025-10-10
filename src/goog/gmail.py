@@ -65,8 +65,8 @@ class Gmail(Context, mail.MailClient):
                 try:
                     param = {'userId': self.account, 'id': row['id'], 'format': 'raw'}
                     data = self.cx.users().messages().get(**param).execute()
-                except Exception as exc:
-                    logger.error(exc)
+                except errors.HttpError as exc:
+                    logger.error(f"API error fetching message {row['id']}: {exc}")
                     continue
                 logger.info(data['snippet'].encode('ascii', errors='ignore').decode(errors='ignore'))
                 raw = base64.urlsafe_b64decode(data['raw'].encode('ascii'))
@@ -95,7 +95,7 @@ class Gmail(Context, mail.MailClient):
                     param = {'userId': self.account, 'id': row['id'], 'body': {label_key: [label]}}
                     self.cx.users().messages().modify(**param).execute()
                     logger.info(f"{action.capitalize()} {label} label for message {row['id']}")
-                except Exception as exc:
+                except errors.HttpError as exc:
                     logger.error(f"Failed to modify {label} label for message {row['id']}: {exc}")
                     continue
             token = res.get('nextPageToken')
@@ -105,63 +105,56 @@ class Gmail(Context, mail.MailClient):
             res = self.list_emails(**kw)
         logger.info(f'Finished marking emails: {action} {label} label')
 
-    def _create_message(self, sender: str, to: str, subject: str, message_text: str,
-                        files: list[str] | None = None) -> dict[str, Any]:
-        """Create a message for an email.
+    def send_mail(self, recipients: str | list[str], subject: str, body: str,
+                  sender: str | None = None, attachments: list[str] | None = None) -> dict[str, Any]:
+        """Send email via Gmail API (blocking, not asynchronous).
         """
-        if files is None:
-            files = []
-        if not files:
-            message = MIMEText(message_text)
+        if sender is None:
+            settings = get_settings()
+            sender = settings.get('mail_from')
+            if sender is None:
+                raise ValueError('sender required when not configured')
+
+        if not isinstance(recipients, tuple | list):
+            recipients = [recipients]
+        recipients = self._resolve_recipients(recipients)
+        to = ','.join(recipients)
+
+        if attachments is None:
+            attachments = []
+
+        if not attachments:
+            msg = MIMEText(body)
         else:
-            message = MIMEMultipart()
-            message.attach(MIMEText(message_text))
-            for file in files:
+            msg = MIMEMultipart()
+            msg.attach(MIMEText(body))
+            for file in attachments:
                 kind = filetype.guess(file)
                 content_type = kind.mime or 'application/octet-stream'
                 main_type, sub_type = content_type.split('/', 1)
                 with Path(file).open('rb') as fp:
                     if main_type == 'text':
-                        msg = MIMEText(fp.read(), _subtype=sub_type)
+                        part = MIMEText(fp.read(), _subtype=sub_type)
                     elif main_type == 'image':
-                        msg = MIMEImage(fp.read(), _subtype=sub_type)
+                        part = MIMEImage(fp.read(), _subtype=sub_type)
                     elif main_type == 'audio':
-                        msg = MIMEAudio(fp.read(), _subtype=sub_type)
+                        part = MIMEAudio(fp.read(), _subtype=sub_type)
                     else:
-                        msg = MIMEBase(main_type, sub_type)
-                        msg.set_payload(fp.read())
+                        part = MIMEBase(main_type, sub_type)
+                        part.set_payload(fp.read())
                 filename = Path(file).name
-                msg.add_header('Content-Disposition', 'attachment', filename=filename)
-                message.attach(msg)
-        message['to'] = to
-        message['from'] = sender
-        message['subject'] = subject
-        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        return {'raw': raw}
+                part.add_header('Content-Disposition', 'attachment', filename=filename)
+                msg.attach(part)
 
-    def send_mail(self, *args, **kwargs) -> dict[str, Any]:
-        """Send email via Gmail API (blocking, not asynchronous).
-        """
-        if len(args) == 4:
-            sender, recipients, subject, body = args
-        elif len(args) == 3:
-            recipients, subject, body = args
-            sender = kwargs.get('sender')
-            if sender is None:
-                settings = get_settings()
-                sender = settings.get('mail_from')
-                if sender is None:
-                    raise ValueError('sender required when not configured')
-        if not isinstance(recipients, tuple | list):
-            recipients = [recipients]
-        recipients = self._resolve_recipients(recipients)
-        recipients = ','.join(recipients)
-        attachments = kwargs.get('attachments', [])
+        msg['to'] = to
+        msg['from'] = sender
+        msg['subject'] = subject
+
         try:
-            message = self._create_message(sender, recipients, subject, body, attachments)
-            message = self.cx.users().messages().send(userId=self.account, body=message).execute()
-            logger.info(f"Message Id: {message['id']}")
-            return message
+            body_dict = {'raw': base64.urlsafe_b64encode(msg.as_bytes()).decode()}
+            res = self.cx.users().messages().send(userId=self.account, body=body_dict).execute()
+            logger.info(f"Message Id: {res['id']}")
+            return res
         except errors.HttpError as err:
             logger.error(f'Failed to send email: {err}')
             raise
