@@ -5,8 +5,9 @@ import logging
 import mimetypes
 import os
 import posixpath
+import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, overload
 
 import filetype
 from goog.base import Context, clean_filename, get_settings
@@ -45,26 +46,107 @@ class Drive(Context):
         normalized = self._normalize_path(path)
         return list(filter(len, posixpath.normpath(normalized).split('/')))
 
-    def delete(self, filepath: str) -> None:
+    def _check_filepath_usage(self, method_name: str, filepath: str | None,
+                              folder: str | None, filename: str | None) -> None:
+        """Check and warn about deprecated filepath parameter usage.
+        """
+        if filepath is not None:
+            if folder is not None or filename is not None:
+                raise TypeError('Cannot specify both filepath and folder/filename')
+            warnings.warn(
+                f"{method_name}(filepath) is deprecated for filenames containing '/'. "
+                f"Use {method_name}(folder=..., filename=...) instead.",
+                DeprecationWarning,
+                stacklevel=3
+            )
+
+    def _get_file_id(self, folder: str, filename: str) -> str | None:
+        """Get file ID by folder and filename (handles filenames with /).
+        """
+        try:
+            folderid = self.id(folder)
+        except LookupError:
+            logger.debug(f'Folder {folder} not found')
+            return None
+
+        clean_name = clean_filename(filename)
+        query = f"name='{clean_name}' and '{folderid}' in parents"
+        page_token = None
+
+        while True:
+            param = dict(
+                q=query,
+                spaces='drive',
+                fields='nextPageToken, files(id, name)',
+                pageToken=page_token,
+                **SHARED_DRIVE_EXTRA,
+            )
+            response = self.cx.files().list(**param).execute()
+            for f in response['files']:
+                logger.debug(f"Found file: {f['name']}")
+                return f['id']
+
+            page_token = response.get('nextPageToken')
+            if page_token is None:
+                break
+
+        return None
+
+    @overload
+    def delete(self, filepath: str) -> None: ...
+
+    @overload
+    def delete(self, *, folder: str, filename: str) -> None: ...
+
+    def delete(self, filepath: str | None = None, *,
+               folder: str | None = None, filename: str | None = None) -> None:
         """Permanently delete a file from Google Drive (files only, not folders).
         """
-        fileid = self.id(filepath)
-        if not fileid:
-            raise ValueError('Can only delete a file, not a folder')
-        self.cx.files().delete(fileId=fileid, supportsAllDrives=True).execute()
-        logger.info(f'Deleted {filepath} from drive')
+        self._check_filepath_usage('delete', filepath, folder, filename)
 
-    def download(self, filepath: str, directory: str | None = None) -> str | None:
+        if filepath is not None:
+            fileid = self.id(filepath)
+            display_name = filepath
+        else:
+            if folder is None or filename is None:
+                raise TypeError('Must provide either filepath or both folder and filename')
+            fileid = self._get_file_id(folder, filename)
+            if not fileid:
+                raise ValueError('Can only delete a file, not a folder')
+            display_name = filename
+
+        self.cx.files().delete(fileId=fileid, supportsAllDrives=True).execute()
+        logger.info(f'Deleted {display_name} from drive')
+
+    @overload
+    def download(self, filepath: str, directory: str | None = None) -> str | None: ...
+
+    @overload
+    def download(self, *, folder: str, filename: str,
+                 directory: str | None = None) -> str | None: ...
+
+    def download(self, filepath: str | None = None, directory: str | None = None, *,
+                 folder: str | None = None, filename: str | None = None) -> str | None:
         """Downloads a file from drive location to local directory.
         """
+        self._check_filepath_usage('download', filepath, folder, filename)
+
+        if filepath is not None:
+            fileid = self.id(filepath)
+            fname = Path(filepath).name
+        else:
+            if folder is None or filename is None:
+                raise TypeError('Must provide either filepath or both folder and filename')
+            fileid = self._get_file_id(folder, filename)
+            if not fileid:
+                raise ValueError('Can only download a file, not a folder')
+            fname = filename
+
         if directory is None:
             directory = self._tmpdir
             if directory is None:
                 raise ValueError('directory required when not configured')
-        fileid = self.id(filepath)
-        if not fileid:
-            raise ValueError('Can only download a file, not a folder')
-        fname = Path(filepath).name
+
         topath = posixpath.join(Path(directory).resolve(), fname)
         with Path(topath).open('wb') as f:
             request = self.cx.files().get_media(fileId=fileid)
@@ -82,12 +164,29 @@ class Drive(Context):
             logger.info(f'Downloaded file {fname}')
             return topath
 
-    def read(self, filepath: str, **kw) -> io.BytesIO:
+    @overload
+    def read(self, filepath: str, **kw) -> io.BytesIO: ...
+
+    @overload
+    def read(self, *, folder: str, filename: str, **kw) -> io.BytesIO: ...
+
+    def read(self, filepath: str | None = None, *,
+             folder: str | None = None, filename: str | None = None, **kw) -> io.BytesIO:
         """Opens file from drive location as a buffered i/o stream.
         """
-        fileid = self.id(filepath)
-        if not fileid:
-            raise ValueError('Can only read a file, not a folder')
+        self._check_filepath_usage('read', filepath, folder, filename)
+
+        if filepath is not None:
+            fileid = self.id(filepath)
+            fname = Path(filepath).name
+        else:
+            if folder is None or filename is None:
+                raise TypeError('Must provide either filepath or both folder and filename')
+            fileid = self._get_file_id(folder, filename)
+            if not fileid:
+                raise ValueError('Can only read a file, not a folder')
+            fname = filename
+
         s = io.BytesIO()
         request = self.cx.files().get_media(fileId=fileid)
         media = MediaIoBaseDownload(s, request)
@@ -97,7 +196,7 @@ class Drive(Context):
                 logger.info(f'Download {int(status.progress() * 100)}%.')
             if done:
                 break
-        logger.info(f'Downloaded file {Path(filepath).name}')
+        logger.info(f'Downloaded file {fname}')
         return s
 
     def walk(self, folder: str = '/', recursive: bool = False,
@@ -140,14 +239,35 @@ class Drive(Context):
                 break
             logger.debug('Next page token, continuing')
 
-    def move(self, filepath: str, to_folder: str) -> None:
+    @overload
+    def move(self, filepath: str, to_folder: str) -> None: ...
+
+    @overload
+    def move(self, *, folder: str, filename: str, to_folder: str) -> None: ...
+
+    def move(self, filepath: str | None = None, to_folder: str | None = None, *,
+             folder: str | None = None, filename: str | None = None) -> None:
         """Move file from google filepath to new parent folder.
         """
-        folder, fname = os.path.split(filepath)
-        if not fname:
-            raise ValueError('Only suitable for moving files, not folders')
-        folderid = self.id(folder)
-        fileid = self.id(filepath)
+        self._check_filepath_usage('move', filepath, folder, filename)
+
+        if filepath is not None:
+            if to_folder is None:
+                raise TypeError('to_folder is required')
+            source_folder, fname = os.path.split(filepath)
+            if not fname:
+                raise ValueError('Only suitable for moving files, not folders')
+            fileid = self.id(filepath)
+        else:
+            if folder is None or filename is None or to_folder is None:
+                raise TypeError('Must provide folder, filename, and to_folder')
+            source_folder = folder
+            fname = filename
+            fileid = self._get_file_id(folder, filename)
+            if not fileid:
+                raise ValueError('Only suitable for moving files, not folders')
+
+        folderid = self.id(source_folder)
         to_folderid = self.id(to_folder)
         param = {'fileId': fileid, 'fields': 'parents', 'supportsAllDrives': True}
         oldfile = self.cx.files().get(**param).execute()
@@ -160,7 +280,6 @@ class Drive(Context):
             'supportsAllDrives': True,
         }
         self.cx.files().update(**param).execute()
-        self.id(filepath)
         logger.info(f'Moved {fname} to Drive folder {to_folder}')
 
     def write(self, filepath_or_data: str | bytes | io.IOBase, fname: str, folder: str,
@@ -360,11 +479,32 @@ class Drive(Context):
             raise LookupError(f'No such folder {folder}')
         return folderid
 
-    def exists(self, filepath: str) -> bool:
+    @overload
+    def exists(self, filepath: str) -> bool: ...
+
+    @overload
+    def exists(self, *, folder: str, filename: str) -> bool: ...
+
+    def exists(self, filepath: str | None = None, *, folder: str | None = None,
+               filename: str | None = None) -> bool:
         """Check if file or folder exists in Google Drive.
         """
-        try:
-            self.id(filepath)
-        except LookupError:
-            return False
-        return True
+        self._check_filepath_usage('exists', filepath, folder, filename)
+
+        if filepath is not None:
+            try:
+                self.id(filepath)
+            except LookupError:
+                return False
+            return True
+
+        if folder is None or filename is None:
+            raise TypeError('Must provide either filepath or both folder and filename')
+
+        fileid = self._get_file_id(folder, filename)
+        if fileid:
+            logger.debug(f'Found {filename} in {folder}')
+            return True
+
+        logger.debug(f'File {filename} not found in {folder}')
+        return False
