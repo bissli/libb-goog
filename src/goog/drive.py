@@ -328,6 +328,7 @@ class Drive(Context):
                 if status:
                     progress = int(status.progress() * 100)
                     pbar.update(progress - pbar.n)
+            pbar.update(100 - pbar.n)
         done = response
         logger.info(f"Wrote file: {done['name']} id: {done['id']} to Drive {folder}")
 

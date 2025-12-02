@@ -72,32 +72,40 @@ The Drive API uses **path-based file access** where you specify files using Unix
 
 #### Key Concepts
 
-**Shared Drive Configuration**
+**Root ID Configuration**
 
 Files are accessed via paths like `'SharedDrive/folder/file.txt'`. The topmost folder name must match a key in your `rootid` configuration:
 
 ```python
 configure(
     rootid={
-        'SharedDrive': '0ABcDeFgHiJkLmNoPqRsTuVwXyZ',
-        'Marketing': '1XyZaBcDeFgHiJkLmNoPqRsTuVw',
-        'Engineering': '2PqRsTuVwXyZaBcDeFgHiJkLmNo'
+        'SharedDrive': '0ABcDeFgHiJkLmNoPqRsTuVwXyZ',  # Shared Drive root
+        'Marketing': '1XyZaBcDeFgHiJkLmNoPqRsTuVw',    # Another Shared Drive
+        'MyDocs': '2PqRsTuVwXyZaBcDeFgHiJkLmNo',       # Folder in "My Drive"
+        'ClientFiles': '3AbCdEfGhIjKlMnOpQrStUv'       # Folder shared with you
     }
 )
 ```
 
-The `rootid` is a dictionary mapping friendly names to Google Drive IDs (long alphanumeric strings).
+The `rootid` is a dictionary mapping friendly names to Google Drive folder IDs (long alphanumeric strings). These IDs can point to:
+- Shared Drive roots
+- Folders in "My Drive"
+- Folders shared with you
+- Any folder you have access to
 
-**How to Find a Drive ID:**
-1. **From URL**: Open the shared drive in Google Drive. The URL will be `https://drive.google.com/drive/folders/0ABcDeFgHiJkLmNoPqRsTuVwXyZ` - the ID is after `folders/`
-2. **From API**: Use `drive.cx.drives().list()` to list all shared drives and their IDs
+**How to Find a Folder ID:**
+1. **From URL**: Open the folder in Google Drive. The URL will be `https://drive.google.com/drive/folders/0ABcDeFgHiJkLmNoPqRsTuVwXyZ` - the ID is after `folders/`
+2. **From API (Shared Drives)**: Use `drive.cx.drives().list()` to list all shared drives and their IDs
+3. **From API (My Drive)**: Use `drive.cx.files().list()` with appropriate queries to find folder IDs
 
 **Path Resolution**
 
 The system resolves paths hierarchically by querying each level by name:
-- `'SharedDrive'` → looks up root ID from `rootid` config
-- `'SharedDrive/folder'` → queries for folder named "folder" in the shared drive
+- `'SharedDrive'` → looks up starting folder ID from `rootid` config
+- `'SharedDrive/folder'` → queries for folder named "folder" within that starting point
 - `'SharedDrive/folder/file.txt'` → queries for file named "file.txt" in that folder
+
+This works the same way whether the root ID points to a Shared Drive, a folder in "My Drive", or any other folder.
 
 #### Common Operations
 
@@ -106,11 +114,13 @@ from goog import Drive
 
 drive = Drive()
 
-# Download a file
+# Download a file (works with any configured root)
 local_path = drive.download('SharedDrive/Reports/report.xlsx', '/tmp')
+local_path = drive.download('MyDocs/personal/notes.txt', '/tmp')
 
 # Upload a local file
 drive.write('local_file.pdf', 'document.pdf', 'SharedDrive/Documents')
+drive.write('notes.txt', 'notes.txt', 'MyDocs/personal')
 
 # Upload from bytes/stream
 drive.write(file_bytes, 'output.csv', 'SharedDrive/Data')
@@ -124,14 +134,14 @@ for filepath in drive.walk('SharedDrive/Projects'):
     print(filepath)
 
 # List files recursively
-for filepath in drive.walk('SharedDrive/Projects', recursive=True):
+for filepath in drive.walk('ClientFiles/deliverables', recursive=True):
     print(filepath)
 
 # Move a file
 drive.move('SharedDrive/Inbox/file.pdf', 'SharedDrive/Archive')
 
 # Delete a file
-drive.delete('SharedDrive/Temp/old_file.txt')
+drive.delete('MyDocs/temp/old_file.txt')
 ```
 
 ### Sheets
