@@ -14,7 +14,7 @@ gspread = "*"
 filetype = "*"
 tqdm = "*"
 libb-mail = { git = "https://github.com/bissli/libb-mail" }
-libb-util = { git = "https://github.com/bissli/libb-util" }
+libb-util = "*"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"
