@@ -661,9 +661,13 @@ class Drive(Context):
 
         if fname:
             fileid = self._resolve_fileid(filepath)
-            if not fileid:
-                raise LookupError(f'No such file {fname} in folder {folder}')
-            return fileid
+            if fileid:
+                return fileid
+            folderid = self._resolve_folderid(
+                self._normalize_path(filepath, trailing_slash=True))
+            if folderid:
+                return folderid
+            raise LookupError(f'No such file or folder {filepath}')
 
         folder = self._normalize_path(folder, trailing_slash=True)
         folderid = self._resolve_folderid(folder)
