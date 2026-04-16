@@ -9,6 +9,7 @@ import warnings
 from pathlib import Path
 from typing import Any, overload
 
+import cachu
 import filetype
 from goog.base import Context, clean_filename, get_settings
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
@@ -42,6 +43,12 @@ class Drive(Context):
         settings = get_settings()
         self._rootid = settings.get('rootid', {})
         self._tmpdir = settings.get('tmpdir')
+        cachu.configure(backend_default='memory', package='goog')
+
+    def clear_cache(self) -> None:
+        """Clear the folder resolution cache.
+        """
+        cachu.cache_clear(tag='folders', backend='memory', package='goog')
 
     def _normalize_path(self, path: str, trailing_slash: bool = False) -> str:
         """Normalize path to use forward slashes.
@@ -542,6 +549,7 @@ class Drive(Context):
                                              fields='id').execute()
             parent_id = created['id']
             logger.info(f'Created folder {current_path} with id {parent_id}')
+        self.clear_cache()
         return parent_id
 
     def _validate_folder(self, folder: str) -> None:
@@ -594,6 +602,31 @@ class Drive(Context):
             if page_token is None:
                 break
 
+    @cachu.cache(ttl=1800, tag='folders', backend='memory', package='goog',
+                 cache_if=lambda r: r is not None)
+    def _resolve_segment(self, parent_id: str, segment: str) -> str | None:
+        """Resolve a single folder segment within a parent folder.
+        """
+        mimetype = 'application/vnd.google-apps.folder'
+        q = f"name='{segment}' and mimeType='{mimetype}' and '{parent_id}' in parents"
+        tok = None
+        while True:
+            param = dict(
+                q=q,
+                spaces='drive',
+                fields='nextPageToken, files(id, name)',
+                pageToken=tok,
+                **SHARED_DRIVE_EXTRA,
+            )
+            resp = self.cx.files().list(**param).execute()
+            for f in resp['files']:
+                logger.info(f"Found folder: {f['name']}")
+                return f['id']
+            if resp.get('nextPageToken') is None:
+                break
+            tok = resp['nextPageToken']
+        return None
+
     def _resolve_folderid(self, folderpath: str) -> str | None:
         """Resolve folder ID by walking from root down to target folder.
         """
@@ -607,40 +640,15 @@ class Drive(Context):
                 folder = folder.replace('/', '')
             return self._rootid.get(folder)
 
-        folders = self._split_path(folder)
-        root, *folders = folders
-        rootid = self._rootid.get(root)
-        folderid = rootid
+        segments = self._split_path(folder)
+        root, *remaining = segments
+        folderid = self._rootid.get(root)
 
-        for _folder in folders:
-            mimetype = 'application/vnd.google-apps.folder'
-            q = f"name='{_folder}' and mimeType='{mimetype}' and '{folderid}' in parents"
-            tok = None
-            found_id = None
-
-            while True:
-                param = dict(
-                    q=q,
-                    spaces='drive',
-                    fields='nextPageToken, files(id, name)',
-                    pageToken=tok,
-                    **SHARED_DRIVE_EXTRA,
-                )
-                resp = self.cx.files().list(**param).execute()
-                for f in resp['files']:
-                    logger.info(f"Found folder: {f['name']}")
-                    found_id = f['id']
-                    break
-
-                if found_id or resp.get('nextPageToken') is None:
-                    break
-                tok = resp['nextPageToken']
-
-            if not found_id:
-                logger.debug(f'Could not locate folder {_folder}')
+        for segment in remaining:
+            folderid = self._resolve_segment(folderid, segment)
+            if folderid is None:
+                logger.debug(f'Could not locate folder {segment}')
                 return None
-
-            folderid = found_id
 
         logger.debug(f'Found folder {folder} with folderid {folderid}')
         return folderid

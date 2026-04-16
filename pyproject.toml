@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "libb-goog"
-version = "0.1.0"
+version = "0.2.0"
 description = "Google API utilities for Calendar, Gmail, Drive, and Sheets"
 authors = ["bissli <bissli@xyz.com>"]
 readme = "README.md"
@@ -15,6 +15,7 @@ filetype = "*"
 tqdm = "*"
 libb-mail = { git = "https://github.com/bissli/libb-mail" }
 libb-util = "*"
+cachu = "^0.3.5"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"
