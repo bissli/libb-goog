@@ -1,0 +1,7 @@
+{
+  "id": "folder_a_id",
+  "name": "folderA",
+  "parents": [
+    "folder_b_id"
+  ]
+}

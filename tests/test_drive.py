@@ -471,6 +471,55 @@ class TestMove:
         assert call_kwargs['addParents'] == 'folder_archive'
         assert 'root123' in call_kwargs['removeParents']
 
+    def test_move_folder_trailing_slash(self, mock_drive, mock_cx):
+        """Verify folder move with trailing-slash path resolves and updates parents.
+        """
+        files = mock_cx.files.return_value
+        src_resolve = files_list_response(
+            [folder_entry('mydir', 'folder_mydir')])
+        dest_resolve = files_list_response(
+            [folder_entry('archive', 'folder_archive')])
+        parents_resp = {'parents': ['root123']}
+        update_resp = {'id': 'folder_mydir', 'parents': ['folder_archive']}
+        files.list.return_value.execute.side_effect = [
+            src_resolve, dest_resolve]
+        files.get.return_value.execute.return_value = parents_resp
+        files.update.return_value.execute.return_value = update_resp
+        mock_drive.move('/TestDrive/mydir/', '/TestDrive/archive/')
+        files.update.assert_called_once()
+        call_kwargs = files.update.call_args[1]
+        assert call_kwargs['addParents'] == 'folder_archive'
+        assert 'root123' in call_kwargs['removeParents']
+
+    def test_move_folder_no_trailing_slash(self, mock_drive, mock_cx):
+        """Verify folder move without trailing slash uses id() fallback to folder.
+        """
+        files = mock_cx.files.return_value
+        empty = files_list_response([])
+        src_resolve = files_list_response(
+            [folder_entry('mydir', 'folder_mydir')])
+        dest_resolve = files_list_response(
+            [folder_entry('archive', 'folder_archive')])
+        parents_resp = {'parents': ['root123']}
+        update_resp = {'id': 'folder_mydir', 'parents': ['folder_archive']}
+        files.list.return_value.execute.side_effect = [
+            empty, src_resolve, dest_resolve]
+        files.get.return_value.execute.return_value = parents_resp
+        files.update.return_value.execute.return_value = update_resp
+        mock_drive.move('/TestDrive/mydir', '/TestDrive/archive/')
+        files.update.assert_called_once()
+        call_kwargs = files.update.call_args[1]
+        assert call_kwargs['addParents'] == 'folder_archive'
+
+    def test_move_not_found_raises(self, mock_drive, mock_cx):
+        """Verify move raises LookupError when item not found via folder/filename.
+        """
+        files = mock_cx.files.return_value
+        files.list.return_value.execute.return_value = files_list_response([])
+        with pytest.raises(LookupError):
+            mock_drive.move(folder='/TestDrive/', filename='ghost.txt',
+                            to_folder='/TestDrive/archive/')
+
 
 class TestInfo:
     """Tests for info() method.

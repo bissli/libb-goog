@@ -391,27 +391,25 @@ class Drive(Context):
 
     def move(self, filepath: str | None = None, to_folder: str | None = None, *,
              folder: str | None = None, filename: str | None = None) -> None:
-        """Move file from google filepath to new parent folder.
+        """Move file or folder to a new parent folder.
         """
         self._check_filepath_usage('move', filepath, folder, filename)
 
         if filepath is not None:
             if to_folder is None:
                 raise TypeError('to_folder is required')
-            source_folder, fname = os.path.split(filepath)
+            _, fname = os.path.split(filepath)
             if not fname:
-                raise ValueError('Only suitable for moving files, not folders')
+                fname = self._split_path(filepath)[-1]
             fileid = self.id(filepath)
         else:
             if folder is None or filename is None or to_folder is None:
                 raise TypeError('Must provide folder, filename, and to_folder')
-            source_folder = folder
             fname = filename
             fileid = self._get_file_id(folder, filename)
             if not fileid:
-                raise ValueError('Only suitable for moving files, not folders')
+                raise LookupError(f'{filename} not found in {folder}')
 
-        folderid = self.id(source_folder)
         to_folderid = self.id(to_folder)
         param = {'fileId': fileid, 'fields': 'parents', 'supportsAllDrives': True}
         oldfile = self.cx.files().get(**param).execute()
@@ -424,6 +422,7 @@ class Drive(Context):
             'supportsAllDrives': True,
         }
         self.cx.files().update(**param).execute()
+        self.clear_cache()
         logger.info(f'Moved {fname} to Drive folder {to_folder}')
 
     @overload
