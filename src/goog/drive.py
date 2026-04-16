@@ -43,7 +43,7 @@ class Drive(Context):
         settings = get_settings()
         self._rootid = settings.get('rootid', {})
         self._tmpdir = settings.get('tmpdir')
-        cachu.configure(backend_default='memory', package='goog')
+        cachu.configure(backend_default='memory')
 
     def clear_cache(self) -> None:
         """Clear the folder resolution cache.
