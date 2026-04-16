@@ -21,6 +21,12 @@ cachu = "^0.3.5"
 pytest = "*"
 pytest-mock = "*"
 
+[tool.pytest.ini_options]
+markers = [
+    "live: requires real Google API credentials (deselect with '-m not live')",
+]
+testpaths = ["tests"]
+
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"

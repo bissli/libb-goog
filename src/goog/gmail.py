@@ -36,6 +36,8 @@ class Gmail(Context, mail.MailClient):
         q = kw.get('q') or kw.get('query')
         if not q:
             kw = {'q': ' '.join([f'{k}:{v}' for k, v in list(kw.items())])}
+        elif 'query' in kw:
+            kw = {'q': q}
         return kw
 
     def get_profile(self) -> dict[str, Any]:
@@ -117,7 +119,6 @@ class Gmail(Context, mail.MailClient):
 
         if not isinstance(recipients, tuple | list):
             recipients = [recipients]
-        recipients = self._resolve_recipients(recipients)
         to = ','.join(recipients)
 
         if attachments is None:

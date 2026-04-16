@@ -555,7 +555,9 @@ class Drive(Context):
     def _validate_folder(self, folder: str) -> None:
         """Validate that the topmost folder in the path is a known shared drive.
         """
-        folders = self._split_path(folder or '')
+        if not folder:
+            return
+        folders = self._split_path(folder)
         if not folders:
             return
         base = folders[0]
