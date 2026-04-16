@@ -19,6 +19,17 @@ logger = logging.getLogger(__name__)
 
 SHARED_DRIVE_EXTRA = {'includeItemsFromAllDrives': True, 'supportsAllDrives': True}
 
+GOOGLE_EXPORT_DEFAULTS = {
+    'application/vnd.google-apps.document': 'text/plain',
+    'application/vnd.google-apps.spreadsheet': 'text/csv',
+    'application/vnd.google-apps.presentation': 'text/plain',
+    'application/vnd.google-apps.drawing': 'application/pdf',
+    'application/vnd.google-apps.script': 'application/vnd.google-apps.script+json',
+    }
+
+INFO_FIELDS = 'id, name, mimeType, size, createdTime, modifiedTime, parents, webViewLink, trashed'
+SEARCH_FIELDS = f'nextPageToken, files({INFO_FIELDS})'
+
 
 class Drive(Context):
     """Google Drive API client for file operations.
@@ -197,11 +208,65 @@ class Drive(Context):
             if done:
                 break
         logger.info(f'Downloaded file {fname}')
+        s.seek(0)
+        return s
+
+    @overload
+    def export(self, filepath: str,
+               mime_type: str | None = None) -> io.BytesIO: ...
+
+    @overload
+    def export(self, *, folder: str, filename: str,
+               mime_type: str | None = None) -> io.BytesIO: ...
+
+    def export(self, filepath: str | None = None, *,
+               folder: str | None = None, filename: str | None = None,
+               mime_type: str | None = None) -> io.BytesIO:
+        """Export a native Google Workspace file to a portable format.
+        """
+        self._check_filepath_usage('export', filepath, folder, filename)
+
+        if filepath is not None:
+            fileid = self.id(filepath)
+            fname = Path(filepath).name
+        else:
+            if folder is None or filename is None:
+                raise TypeError(
+                    'Must provide either filepath or both folder and filename')
+            fileid = self._get_file_id(folder, filename)
+            if not fileid:
+                raise LookupError(f'File {filename} not found in {folder}')
+            fname = filename
+
+        if not mime_type:
+            meta = self.cx.files().get(
+                fileId=fileid, fields='mimeType',
+                supportsAllDrives=True).execute()
+            source_type = meta['mimeType']
+            mime_type = GOOGLE_EXPORT_DEFAULTS.get(source_type)
+            if not mime_type:
+                raise ValueError(
+                    f'No default export type for {source_type}, '
+                    f'specify mime_type explicitly')
+
+        s = io.BytesIO()
+        request = self.cx.files().export_media(
+            fileId=fileid, mimeType=mime_type)
+        media = MediaIoBaseDownload(s, request)
+        while True:
+            status, done = media.next_chunk()
+            if status:
+                logger.info(f'Export {int(status.progress() * 100)}%.')
+            if done:
+                break
+        logger.info(f'Exported {fname} as {mime_type}')
+        s.seek(0)
         return s
 
     def walk(self, folder: str = '/', recursive: bool = False,
              links: bool = False, ctime: bool = False, mtime: bool = False,
-             since: str | None = None, exclude_trashed: bool = True) -> Any:
+             since: str | None = None, exclude_trashed: bool = True,
+             detail: bool = False) -> Any:
         """List files in Drive folder by path, optionally recursive.
         """
         _fields = ['id', 'name', 'mimeType']
@@ -228,16 +293,88 @@ class Drive(Context):
                 filepath = posixpath.join(folder, f['name'])
                 is_folder = f['mimeType'] == 'application/vnd.google-apps.folder'
                 if is_folder and recursive:
-                    yield from self.walk(filepath, recursive=True, links=links,
-                                         ctime=ctime, mtime=mtime, since=since,
-                                         exclude_trashed=exclude_trashed)
+                    yield from self.walk(
+                        filepath, recursive=True, links=links,
+                        ctime=ctime, mtime=mtime, since=since,
+                        exclude_trashed=exclude_trashed, detail=detail)
                 elif not is_folder:
-                    yield filepath
+                    if detail:
+                        entry = {'path': filepath, 'id': f['id'],
+                                 'name': f['name'], 'mimeType': f['mimeType']}
+                        if links:
+                            entry['webContentLink'] = f.get('webContentLink')
+                        if ctime:
+                            entry['createdTime'] = f.get('createdTime')
+                        if mtime:
+                            entry['modifiedTime'] = f.get('modifiedTime')
+                        yield entry
+                    else:
+                        yield filepath
             tok = resp.get('nextPageToken')
             if tok is None:
                 logger.info('No more items, exiting')
                 break
             logger.debug('Next page token, continuing')
+
+    def search(self, query: str | None = None, *,
+               folder: str | None = None,
+               limit: int = 100) -> list[dict[str, Any]]:
+        """Search for files in Google Drive using API query syntax.
+        """
+        clauses = []
+        if query:
+            clauses.append(query)
+        if folder:
+            folderid = self.id(folder)
+            clauses.append(f"'{folderid}' in parents")
+        if not any('trashed' in c for c in clauses):
+            clauses.append('trashed=false')
+        q = ' and '.join(clauses) if clauses else None
+
+        results = []
+        tok = None
+        while len(results) < limit:
+            page_size = min(limit - len(results), 1000)
+            param = dict(
+                q=q, fields=SEARCH_FIELDS, pageToken=tok,
+                pageSize=page_size, **SHARED_DRIVE_EXTRA)
+            resp = self.cx.files().list(**param).execute()
+            for f in resp.get('files', []):
+                results.append(f)
+                if len(results) >= limit:
+                    break
+            tok = resp.get('nextPageToken')
+            if tok is None:
+                break
+        logger.info(f'Search returned {len(results)} results')
+        return results
+
+    @overload
+    def info(self, filepath: str) -> dict[str, Any]: ...
+
+    @overload
+    def info(self, *, folder: str, filename: str) -> dict[str, Any]: ...
+
+    def info(self, filepath: str | None = None, *,
+             folder: str | None = None,
+             filename: str | None = None) -> dict[str, Any]:
+        """Get file metadata from Google Drive.
+        """
+        self._check_filepath_usage('info', filepath, folder, filename)
+
+        if filepath is not None:
+            fileid = self.id(filepath)
+        else:
+            if folder is None or filename is None:
+                raise TypeError(
+                    'Must provide either filepath or both folder and filename')
+            fileid = self._get_file_id(folder, filename)
+            if not fileid:
+                raise LookupError(f'File {filename} not found in {folder}')
+
+        return self.cx.files().get(
+            fileId=fileid, fields=INFO_FIELDS,
+            supportsAllDrives=True).execute()
 
     @overload
     def move(self, filepath: str, to_folder: str) -> None: ...
@@ -281,6 +418,52 @@ class Drive(Context):
         }
         self.cx.files().update(**param).execute()
         logger.info(f'Moved {fname} to Drive folder {to_folder}')
+
+    @overload
+    def copy(self, filepath: str, *, to_name: str | None = None,
+             to_folder: str | None = None) -> str: ...
+
+    @overload
+    def copy(self, *, folder: str, filename: str, to_name: str | None = None,
+             to_folder: str | None = None) -> str: ...
+
+    def copy(self, filepath: str | None = None, *, folder: str | None = None,
+             filename: str | None = None, to_name: str | None = None,
+             to_folder: str | None = None) -> str:
+        """Copy a file, returning the new file ID.
+        """
+        self._check_filepath_usage('copy', filepath, folder, filename)
+
+        if filepath is not None:
+            fileid = self.id(filepath)
+            source_folder, fname = os.path.split(filepath)
+            if not fname:
+                raise ValueError('Only suitable for copying files, not folders')
+        else:
+            if folder is None or filename is None:
+                raise TypeError(
+                    'Must provide either filepath or both folder and filename')
+            fileid = self._get_file_id(folder, filename)
+            if not fileid:
+                raise LookupError(f'File {filename} not found in {folder}')
+            fname = filename
+            source_folder = folder
+
+        dest_name = to_name or fname
+        if to_folder is not None:
+            dest_folderid = self.id(to_folder)
+        else:
+            if to_name is None:
+                raise ValueError(
+                    'Must provide to_name when copying to the same folder')
+            dest_folderid = self.id(source_folder)
+
+        body = {'name': dest_name, 'parents': [dest_folderid]}
+        result = self.cx.files().copy(
+            fileId=fileid, body=body,
+            supportsAllDrives=True, fields='id, name').execute()
+        logger.info(f"Copied {fname} to {result['name']}")
+        return result['id']
 
     def write(self, filepath_or_data: str | bytes | io.IOBase, fname: str, folder: str,
               mimetype: str | None = None, overwrite: bool = True,
