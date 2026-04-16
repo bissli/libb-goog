@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "libb-goog"
-version = "0.2.0"
+version = "0.3.0"
 description = "Google API utilities for Calendar, Gmail, Drive, and Sheets"
 authors = ["bissli <bissli@xyz.com>"]
 readme = "README.md"

@@ -9,11 +9,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from goog.base import clean_filename
+from goog.drive import FOLDER_MIME
 from tests.fixtures.drive_responses import file_entry, files_get_response
 from tests.fixtures.drive_responses import files_list_response, folder_entry
 from tests.fixtures.drive_responses import load_fixture
-
-FOLDER_MIME = 'application/vnd.google-apps.folder'
 
 
 def _setup_folder_resolution(mock_cx, segments: list[tuple[str, str]]) -> None:
@@ -747,3 +746,231 @@ class TestCacheBehavior:
         mock_drive.clear_cache()
         mock_drive._resolve_segment('root123', 'sub')
         assert files.list.return_value.execute.call_count == 2
+
+
+class TestMakedirs:
+    """Tests for makedirs() recursive folder creation.
+    """
+
+    def test_makedirs_creates_nested_folders(self, mock_drive, mock_cx):
+        """Verify makedirs creates missing segments and returns final ID.
+        """
+        files = mock_cx.files.return_value
+        create_resp = {'id': 'new_deep_id'}
+        files.create.return_value.execute.return_value = create_resp
+        exists_map = {'/TestDrive/sub': True, '/TestDrive/sub/deep': False}
+        with patch.object(mock_drive, 'exists', side_effect=lambda p: exists_map[p]), \
+        patch.object(mock_drive, 'id', return_value='folder_sub'):
+            result = mock_drive.makedirs('/TestDrive/sub/deep')
+        assert result == 'new_deep_id'
+        files.create.assert_called_once()
+        body = files.create.call_args[1]['body']
+        assert body['name'] == 'deep'
+        assert body['mimeType'] == FOLDER_MIME
+        assert body['parents'] == ['folder_sub']
+
+    def test_makedirs_all_exist(self, mock_drive, mock_cx):
+        """Verify makedirs returns existing folder ID when path exists.
+        """
+        files = mock_cx.files.return_value
+        id_map = {'/TestDrive/sub': 'folder_sub',
+                  '/TestDrive/sub/deep': 'folder_deep'}
+        with patch.object(mock_drive, 'exists', return_value=True), \
+        patch.object(mock_drive, 'id', side_effect=lambda p: id_map[p]):
+            result = mock_drive.makedirs('/TestDrive/sub/deep')
+        assert result == 'folder_deep'
+        files.create.assert_not_called()
+
+    def test_makedirs_unknown_root_raises(self, mock_drive):
+        """Verify makedirs raises LookupError for unknown root.
+        """
+        with pytest.raises(LookupError, match='Unknown Shared Drive'):
+            mock_drive.makedirs('/BadDrive/sub')
+
+    def test_makedirs_clears_cache(self, mock_drive, mock_cx):
+        """Verify makedirs clears folder cache after creation.
+        """
+        files = mock_cx.files.return_value
+        sub_resp = files_list_response([folder_entry('sub', 'folder_sub')])
+        files.list.return_value.execute.return_value = sub_resp
+        mock_drive.clear_cache()
+        mock_drive.makedirs('/TestDrive/sub')
+        mock_drive._resolve_segment('root123', 'sub')
+        assert files.list.return_value.execute.call_count >= 2
+
+
+class TestListChildren:
+    """Tests for _list_children() helper.
+    """
+
+    def test_list_children_returns_files_and_folders(self, mock_drive, mock_cx):
+        """Verify _list_children returns both files and folders.
+        """
+        files = mock_cx.files.return_value
+        children = [
+            file_entry('doc.txt', 'file_doc', 'text/plain'),
+            folder_entry('subdir', 'folder_sub'),
+            ]
+        files.list.return_value.execute.return_value = files_list_response(children)
+        result = mock_drive._list_children('parent_id')
+        assert len(result) == 2
+        assert result[0]['name'] == 'doc.txt'
+        assert result[1]['name'] == 'subdir'
+
+    def test_list_children_paginates(self, mock_drive, mock_cx):
+        """Verify _list_children handles pagination.
+        """
+        files = mock_cx.files.return_value
+        page1 = files_list_response(
+            [file_entry('a.txt', 'id_a', 'text/plain')],
+            next_page_token='tok2')
+        page2 = files_list_response(
+            [file_entry('b.txt', 'id_b', 'text/plain')])
+        files.list.return_value.execute.side_effect = [page1, page2]
+        result = mock_drive._list_children('parent_id')
+        assert len(result) == 2
+        assert result[0]['name'] == 'a.txt'
+        assert result[1]['name'] == 'b.txt'
+
+
+class TestDeleteExtended:
+    """Extended tests for delete() with folders and error handling.
+    """
+
+    def test_delete_folder_by_filepath(self, mock_drive, mock_cx):
+        """Verify delete works for folders via filepath form.
+        """
+        files = mock_cx.files.return_value
+        empty = files_list_response([])
+        folder_resp = files_list_response(
+            [folder_entry('old_dir', 'folder_old')])
+        files.list.return_value.execute.side_effect = [empty, folder_resp]
+        files.delete.return_value.execute.return_value = None
+        mock_drive.delete('/TestDrive/old_dir')
+        files.delete.assert_called_once()
+        assert files.delete.call_args[1]['fileId'] == 'folder_old'
+
+    def test_delete_not_found_raises_lookup_error(self, mock_drive, mock_cx):
+        """Verify delete raises LookupError (not ValueError) when not found.
+        """
+        files = mock_cx.files.return_value
+        folder_resp = files_list_response(
+            [folder_entry('docs', 'folder_docs')])
+        empty = files_list_response([])
+        files.list.return_value.execute.side_effect = [folder_resp, empty]
+        with pytest.raises(LookupError, match='not found'):
+            mock_drive.delete(folder='TestDrive/docs', filename='ghost.txt')
+
+
+class TestDownloadExtended:
+    """Extended tests for download() error handling.
+    """
+
+    def test_download_not_found_raises_lookup_error(self, mock_drive, mock_cx):
+        """Verify download raises LookupError when file not found.
+        """
+        files = mock_cx.files.return_value
+        folder_resp = files_list_response(
+            [folder_entry('docs', 'folder_docs')])
+        empty = files_list_response([])
+        files.list.return_value.execute.side_effect = [folder_resp, empty]
+        with pytest.raises(LookupError, match='not found'):
+            mock_drive.download(folder='TestDrive/docs', filename='ghost.txt')
+
+
+class TestMoveTree:
+    """Tests for move_tree() method.
+    """
+
+    def test_move_tree_creates_dest_and_moves_children(self, mock_drive, mock_cx):
+        """Verify move_tree creates destination folder and moves files.
+        """
+        files = mock_cx.files.return_value
+        children = [
+            file_entry('a.txt', 'file_a', 'text/plain'),
+            file_entry('b.txt', 'file_b', 'text/plain'),
+            ]
+        with patch.object(mock_drive, 'makedirs', return_value='new_dest_id') as mk, \
+        patch.object(mock_drive, '_list_children',
+                     side_effect=[children, []]) as lc:
+            files.update.return_value.execute.return_value = {'id': 'x', 'parents': ['new_dest_id']}
+            files.delete.return_value.execute.return_value = None
+            src_resolve = files_list_response(
+                [folder_entry('ticker', 'folder_ticker')])
+            files.list.return_value.execute.return_value = src_resolve
+            mock_drive.move_tree('/TestDrive/ticker', '/TestDrive/dest')
+        mk.assert_called_once_with('/TestDrive/dest/ticker')
+        assert lc.call_count == 2
+        assert files.update.return_value.execute.call_count == 2
+        files.delete.assert_called_once()
+
+    def test_move_tree_recursive_subfolders(self, mock_drive, mock_cx):
+        """Verify move_tree recurses into child subfolders.
+        """
+        files = mock_cx.files.return_value
+        children_with_subfolder = [
+            file_entry('a.txt', 'file_a', 'text/plain'),
+            folder_entry('nested', 'folder_nested'),
+            ]
+        nested_children = [
+            file_entry('deep.txt', 'file_deep', 'text/plain'),
+            ]
+        makedirs_calls = []
+
+        def track_makedirs(path):
+            makedirs_calls.append(path)
+            return f'dest_{path}'
+
+        id_map = {'/TestDrive/parent': 'folder_parent',
+                  '/TestDrive/parent/nested': 'folder_nested'}
+
+        list_children_responses = [
+            children_with_subfolder,
+            nested_children,
+            [],
+            [],
+            ]
+
+        with patch.object(mock_drive, 'makedirs', side_effect=track_makedirs), \
+        patch.object(mock_drive, '_list_children',
+                     side_effect=list_children_responses), \
+        patch.object(mock_drive, 'id', side_effect=lambda p: id_map[p]):
+            files.update.return_value.execute.return_value = {'id': 'x', 'parents': ['y']}
+            files.delete.return_value.execute.return_value = None
+            mock_drive.move_tree('/TestDrive/parent', '/TestDrive/dest')
+        assert '/TestDrive/dest/parent' in makedirs_calls
+        assert '/TestDrive/dest/parent/nested' in makedirs_calls
+        assert files.update.return_value.execute.call_count == 2
+
+    def test_move_tree_deletes_empty_source(self, mock_drive, mock_cx):
+        """Verify move_tree deletes source folder when empty after move.
+        """
+        files = mock_cx.files.return_value
+        children = [file_entry('a.txt', 'file_a', 'text/plain')]
+        with patch.object(mock_drive, 'makedirs', return_value='new_dest_id'), \
+        patch.object(mock_drive, '_list_children',
+                     side_effect=[children, []]):
+            files.update.return_value.execute.return_value = {'id': 'x', 'parents': ['y']}
+            files.delete.return_value.execute.return_value = None
+            folder_resp = files_list_response(
+                [folder_entry('ticker', 'folder_ticker')])
+            files.list.return_value.execute.return_value = folder_resp
+            mock_drive.move_tree('/TestDrive/ticker', '/TestDrive/dest')
+        files.delete.assert_called_once()
+        assert files.delete.call_args[1]['fileId'] == 'folder_ticker'
+
+    def test_move_tree_preserves_source_on_remaining(self, mock_drive, mock_cx):
+        """Verify move_tree does not delete source if children remain.
+        """
+        files = mock_cx.files.return_value
+        children = [file_entry('a.txt', 'file_a', 'text/plain')]
+        leftover = [file_entry('orphan.txt', 'file_orphan', 'text/plain')]
+        with patch.object(mock_drive, 'makedirs', return_value='new_dest_id'), \
+        patch.object(mock_drive, '_list_children',
+                     side_effect=[children, leftover]):
+            files.update.return_value.execute.return_value = {'id': 'x', 'parents': ['y']}
+            folder_resp = files_list_response(
+                [folder_entry('ticker', 'folder_ticker')])
+            files.list.return_value.execute.return_value = folder_resp
+            mock_drive.move_tree('/TestDrive/ticker', '/TestDrive/dest')
+        files.delete.assert_not_called()

@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": 403,
+    "message": "Moving folders into shared drives is not supported.",
+    "errors": [
+      {
+        "message": "Moving folders into shared drives is not supported.",
+        "domain": "global",
+        "reason": "teamDrivesFolderMoveInNotSupported"
+      }
+    ]
+  }
+}

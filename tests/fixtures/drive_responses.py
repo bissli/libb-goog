@@ -6,6 +6,9 @@ Sanitized JSON fixtures in data/ were captured from a live environment.
 import json
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
+
+from googleapiclient.errors import HttpError
 
 FIXTURES_DIR = Path(__file__).parent / 'data'
 
@@ -63,3 +66,13 @@ def files_get_response(file_id: str, name: str,
     }
     resp.update(extra)
     return resp
+
+
+def http_error_from_fixture(name: str, status: int = 403) -> HttpError:
+    """Build an HttpError from a JSON fixture file.
+    """
+    resp = MagicMock()
+    resp.status = status
+    resp.reason = 'Forbidden'
+    content = (FIXTURES_DIR / f'{name}.json').read_bytes()
+    return HttpError(resp, content)

@@ -19,6 +19,7 @@ from tqdm import tqdm
 logger = logging.getLogger(__name__)
 
 SHARED_DRIVE_EXTRA = {'includeItemsFromAllDrives': True, 'supportsAllDrives': True}
+FOLDER_MIME = 'application/vnd.google-apps.folder'
 
 GOOGLE_EXPORT_DEFAULTS = {
     'application/vnd.google-apps.document': 'text/plain',
@@ -118,7 +119,7 @@ class Drive(Context):
 
     def delete(self, filepath: str | None = None, *,
                folder: str | None = None, filename: str | None = None) -> None:
-        """Permanently delete a file from Google Drive (files only, not folders).
+        """Permanently delete a file or folder from Google Drive.
         """
         self._check_filepath_usage('delete', filepath, folder, filename)
 
@@ -130,7 +131,7 @@ class Drive(Context):
                 raise TypeError('Must provide either filepath or both folder and filename')
             fileid = self._get_file_id(folder, filename)
             if not fileid:
-                raise ValueError('Can only delete a file, not a folder')
+                raise LookupError(f'{filename} not found in {folder}')
             display_name = filename
 
         self.cx.files().delete(fileId=fileid, supportsAllDrives=True).execute()
@@ -157,7 +158,7 @@ class Drive(Context):
                 raise TypeError('Must provide either filepath or both folder and filename')
             fileid = self._get_file_id(folder, filename)
             if not fileid:
-                raise ValueError('Can only download a file, not a folder')
+                raise LookupError(f'{filename} not found in {folder}')
             fname = filename
 
         if directory is None:
@@ -169,16 +170,18 @@ class Drive(Context):
         with Path(topath).open('wb') as f:
             request = self.cx.files().get_media(fileId=fileid)
             media = MediaIoBaseDownload(f, request)
-            while True:
-                try:
-                    status, done = media.next_chunk()
-                except Exception:
-                    logger.exception(f'Download failed for {fname}')
-                    raise
-                if status:
-                    logger.info(f'Download Progress: {int(status.progress() * 100)}%')
-                if done:
-                    break
+            with tqdm(total=100, unit='%', desc=f'Downloading {fname}') as pbar:
+                while True:
+                    try:
+                        status, done = media.next_chunk()
+                    except Exception:
+                        logger.exception(f'Download failed for {fname}')
+                        raise
+                    if status:
+                        pbar.update(int(status.progress() * 100) - pbar.n)
+                    if done:
+                        pbar.update(100 - pbar.n)
+                        break
             logger.info(f'Downloaded file {fname}')
             return topath
 
@@ -202,18 +205,20 @@ class Drive(Context):
                 raise TypeError('Must provide either filepath or both folder and filename')
             fileid = self._get_file_id(folder, filename)
             if not fileid:
-                raise ValueError('Can only read a file, not a folder')
+                raise LookupError(f'{filename} not found in {folder}')
             fname = filename
 
         s = io.BytesIO()
         request = self.cx.files().get_media(fileId=fileid)
         media = MediaIoBaseDownload(s, request)
-        while True:
-            status, done = media.next_chunk()
-            if status:
-                logger.info(f'Download {int(status.progress() * 100)}%.')
-            if done:
-                break
+        with tqdm(total=100, unit='%', desc=f'Reading {fname}') as pbar:
+            while True:
+                status, done = media.next_chunk()
+                if status:
+                    pbar.update(int(status.progress() * 100) - pbar.n)
+                if done:
+                    pbar.update(100 - pbar.n)
+                    break
         logger.info(f'Downloaded file {fname}')
         s.seek(0)
         return s
@@ -260,12 +265,14 @@ class Drive(Context):
         request = self.cx.files().export_media(
             fileId=fileid, mimeType=mime_type)
         media = MediaIoBaseDownload(s, request)
-        while True:
-            status, done = media.next_chunk()
-            if status:
-                logger.info(f'Export {int(status.progress() * 100)}%.')
-            if done:
-                break
+        with tqdm(total=100, unit='%', desc=f'Exporting {fname}') as pbar:
+            while True:
+                status, done = media.next_chunk()
+                if status:
+                    pbar.update(int(status.progress() * 100) - pbar.n)
+                if done:
+                    pbar.update(100 - pbar.n)
+                    break
         logger.info(f'Exported {fname} as {mime_type}')
         s.seek(0)
         return s
@@ -298,7 +305,7 @@ class Drive(Context):
             logger.info(f'Returned {len(files)} items from {folder}')
             for f in files:
                 filepath = posixpath.join(folder, f['name'])
-                is_folder = f['mimeType'] == 'application/vnd.google-apps.folder'
+                is_folder = f['mimeType'] == FOLDER_MIME
                 if is_folder and recursive:
                     yield from self.walk(
                         filepath, recursive=True, links=links,
@@ -496,7 +503,7 @@ class Drive(Context):
         to_filepath = posixpath.join(folder, fname)
         self._protect(to_filepath, overwrite)
         if mkdir_p and not self.exists(folder):
-            folderid = self._mkdir_p(folder)
+            folderid = self.makedirs(folder)
         else:
             folderid = self.id(folder)
         if data:
@@ -521,8 +528,8 @@ class Drive(Context):
         done = response
         logger.info(f"Wrote file: {done['name']} id: {done['id']} to Drive {folder}")
 
-    def _mkdir_p(self, folder: str) -> str:
-        """Create folder path recursively (like mkdir -p).
+    def makedirs(self, folder: str) -> str:
+        """Create folder path recursively (like mkdir -p), returning the final folder ID.
         """
         self._validate_folder(folder)
         folders = self._split_path(folder)
@@ -540,7 +547,7 @@ class Drive(Context):
                 continue
             meta = {
                 'name': subfolder,
-                'mimeType': 'application/vnd.google-apps.folder',
+                'mimeType': FOLDER_MIME,
                 'parents': [parent_id]
             }
             created = self.cx.files().create(body=meta,
@@ -550,6 +557,79 @@ class Drive(Context):
             logger.info(f'Created folder {current_path} with id {parent_id}')
         self.clear_cache()
         return parent_id
+
+    def _list_children(self, folder_id: str) -> list[dict[str, Any]]:
+        """List all children (files and folders) of a folder by ID.
+        """
+        q = f"'{folder_id}' in parents and trashed=false"
+        results = []
+        tok = None
+        while True:
+            param = dict(
+                q=q,
+                fields='nextPageToken, files(id, name, mimeType)',
+                pageToken=tok,
+                **SHARED_DRIVE_EXTRA,
+                )
+            resp = self.cx.files().list(**param).execute()
+            results.extend(resp.get('files', []))
+            tok = resp.get('nextPageToken')
+            if tok is None:
+                break
+        return results
+
+    def move_tree(self, folder: str, to_folder: str) -> None:
+        """Move a folder's contents to a new location, creating destination as needed.
+
+        Unlike move(), this creates a new destination folder and moves
+        children individually. Use when move() fails due to Shared Drive
+        restrictions (teamDrivesFolderMoveInNotSupported). The source
+        folder is deleted after all children are moved.
+
+        The destination gets a new folder ID. Sharing settings, permissions,
+        and timestamps from the source folder are not preserved.
+
+        Example fallback pattern::
+
+            try:
+                drive.move(src, dst)
+            except HttpError as exc:
+                if (exc.status_code == 403
+                    and isinstance(exc.error_details, list)
+                    and any(d.get('reason') == 'teamDrivesFolderMoveInNotSupported'
+                            for d in exc.error_details)):
+                    drive.move_tree(src, dst)
+                else:
+                    raise
+        """
+        src_folder_id = self.id(folder)
+        folder_name = self._split_path(folder)[-1]
+        dest_path = posixpath.join(to_folder, folder_name)
+        dest_id = self.makedirs(dest_path)
+
+        children = self._list_children(src_folder_id)
+        files = [c for c in children if c['mimeType'] != FOLDER_MIME]
+        subfolders = [c for c in children if c['mimeType'] == FOLDER_MIME]
+
+        for subfolder in subfolders:
+            child_path = posixpath.join(folder, subfolder['name'])
+            self.move_tree(child_path, dest_path)
+
+        for f in tqdm(files, desc=f'Moving {folder_name}', unit='file', leave=False):
+            self.cx.files().update(
+                fileId=f['id'],
+                addParents=dest_id,
+                removeParents=src_folder_id,
+                fields='id, parents',
+                supportsAllDrives=True,
+                ).execute()
+
+        self.clear_cache()
+        remaining = self._list_children(src_folder_id)
+        if not remaining:
+            self.cx.files().delete(
+                fileId=src_folder_id, supportsAllDrives=True).execute()
+            logger.info(f'Deleted empty source folder {folder}')
 
     def _validate_folder(self, folder: str) -> None:
         """Validate that the topmost folder in the path is a known shared drive.
@@ -608,8 +688,7 @@ class Drive(Context):
     def _resolve_segment(self, parent_id: str, segment: str) -> str | None:
         """Resolve a single folder segment within a parent folder.
         """
-        mimetype = 'application/vnd.google-apps.folder'
-        q = f"name='{segment}' and mimeType='{mimetype}' and '{parent_id}' in parents"
+        q = f"name='{segment}' and mimeType='{FOLDER_MIME}' and '{parent_id}' in parents"
         tok = None
         while True:
             param = dict(
