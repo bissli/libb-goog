@@ -8,10 +8,11 @@ import os
 from unittest.mock import MagicMock, patch
 
 import pytest
-from goog.base import clean_filename
+from goog.base import RateLimitError, clean_filename
 from goog.drive import FOLDER_MIME
 from tests.fixtures.drive_responses import file_entry, files_get_response
 from tests.fixtures.drive_responses import files_list_response, folder_entry
+from tests.fixtures.drive_responses import http_error_from_fixture
 from tests.fixtures.drive_responses import load_fixture
 
 
@@ -974,3 +975,19 @@ class TestMoveTree:
             files.list.return_value.execute.return_value = folder_resp
             mock_drive.move_tree('/TestDrive/ticker', '/TestDrive/dest')
         files.delete.assert_not_called()
+
+    def test_move_tree_raises_rate_limit_error(self, mock_drive, mock_cx):
+        """Verify move_tree raises RateLimitError on sustained rate limit.
+        """
+        files = mock_cx.files.return_value
+        children = [file_entry('a.txt', 'file_a', 'text/plain')]
+        rate_limit_exc = http_error_from_fixture(
+            'files_update_rate_limit_exceeded', 403)
+        with patch.object(mock_drive, 'makedirs', return_value='new_dest_id'), \
+        patch.object(mock_drive, '_list_children', return_value=children):
+            files.update.return_value.execute.side_effect = rate_limit_exc
+            folder_resp = files_list_response(
+                [folder_entry('ticker', 'folder_ticker')])
+            files.list.return_value.execute.return_value = folder_resp
+            with pytest.raises(RateLimitError, match='Rate limit persisted'):
+                mock_drive.move_tree('/TestDrive/ticker', '/TestDrive/dest')

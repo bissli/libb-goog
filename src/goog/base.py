@@ -5,6 +5,7 @@ from typing import Any
 
 from apiclient import discovery
 from google.oauth2 import service_account
+from googleapiclient.errors import HttpError
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,26 @@ def get_settings() -> dict[str, Any]:
     """Get current module settings.
     """
     return _settings
+
+
+class RateLimitError(Exception):
+    """Raised when a Google API rate limit persists after retries.
+    """
+
+
+def is_rate_limit(exc: HttpError) -> bool:
+    """Check if an HttpError is a rate-limit response.
+    """
+    if exc.resp.status == 429:
+        return True
+    if exc.resp.status == 403:
+        details = getattr(exc, 'error_details', None)
+        if not isinstance(details, list):
+            return False
+        return any(
+            d.get('reason') in {'userRateLimitExceeded', 'rateLimitExceeded'}
+            for d in details)
+    return False
 
 
 def clean_filename(fname: str) -> str:

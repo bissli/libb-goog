@@ -20,26 +20,26 @@ class Calendar(Context):
     def list_calendar(self, **kw: Any) -> dict[str, Any]:
         """List calendars.
         """
-        return self.cx.calendarList().list().execute()
+        return self.cx.calendarList().list().execute(num_retries=3)
 
     def list_events(self, **kw: Any) -> dict[str, Any]:
         """List calendar events.
         """
-        return self.cx.events().list(**kw).execute()
+        return self.cx.events().list(**kw).execute(num_retries=3)
 
     def get_events(self, **kw: Any) -> dict[str, Any]:
         """Get calendar events.
         """
-        return self.cx.events().get(**kw).execute()
+        return self.cx.events().get(**kw).execute(num_retries=3)
 
     def delete_events(self, **kw: Any) -> dict[str, Any]:
         """Delete calendar events.
         """
         logger.info('Deleting calendar events')
-        return self.cx.events().delete(**kw).execute()
+        return self.cx.events().delete(**kw).execute(num_retries=3)
 
     def insert_events(self, **kw: Any) -> dict[str, Any]:
         """Insert calendar events.
         """
         logger.info('Creating calendar events')
-        return self.cx.events().insert(**kw).execute()
+        return self.cx.events().insert(**kw).execute(num_retries=3)

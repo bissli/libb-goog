@@ -11,7 +11,9 @@ from typing import Any, overload
 
 import cachu
 import filetype
-from goog.base import Context, clean_filename, get_settings
+from goog.base import Context, RateLimitError, clean_filename, get_settings
+from goog.base import is_rate_limit
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from googleapiclient.http import MediaIoBaseUpload
 from tqdm import tqdm
@@ -100,7 +102,7 @@ class Drive(Context):
                 pageToken=page_token,
                 **SHARED_DRIVE_EXTRA,
             )
-            response = self.cx.files().list(**param).execute()
+            response = self.cx.files().list(**param).execute(num_retries=5)
             for f in response['files']:
                 logger.debug(f"Found file: {f['name']}")
                 return f['id']
@@ -134,7 +136,7 @@ class Drive(Context):
                 raise LookupError(f'{filename} not found in {folder}')
             display_name = filename
 
-        self.cx.files().delete(fileId=fileid, supportsAllDrives=True).execute()
+        self.cx.files().delete(fileId=fileid, supportsAllDrives=True).execute(num_retries=5)
         logger.info(f'Deleted {display_name} from drive')
 
     @overload
@@ -253,7 +255,7 @@ class Drive(Context):
         if not mime_type:
             meta = self.cx.files().get(
                 fileId=fileid, fields='mimeType',
-                supportsAllDrives=True).execute()
+                supportsAllDrives=True).execute(num_retries=5)
             source_type = meta['mimeType']
             mime_type = GOOGLE_EXPORT_DEFAULTS.get(source_type)
             if not mime_type:
@@ -300,7 +302,7 @@ class Drive(Context):
         tok = None
         while True:
             param = dict(q=q, fields=fields, pageToken=tok, **SHARED_DRIVE_EXTRA)
-            resp = self.cx.files().list(**param).execute()
+            resp = self.cx.files().list(**param).execute(num_retries=5)
             files = resp['files']
             logger.info(f'Returned {len(files)} items from {folder}')
             for f in files:
@@ -352,7 +354,7 @@ class Drive(Context):
             param = dict(
                 q=q, fields=SEARCH_FIELDS, pageToken=tok,
                 pageSize=page_size, **SHARED_DRIVE_EXTRA)
-            resp = self.cx.files().list(**param).execute()
+            resp = self.cx.files().list(**param).execute(num_retries=5)
             for f in resp.get('files', []):
                 results.append(f)
                 if len(results) >= limit:
@@ -388,7 +390,7 @@ class Drive(Context):
 
         return self.cx.files().get(
             fileId=fileid, fields=INFO_FIELDS,
-            supportsAllDrives=True).execute()
+            supportsAllDrives=True).execute(num_retries=5)
 
     @overload
     def move(self, filepath: str, to_folder: str) -> None: ...
@@ -419,7 +421,7 @@ class Drive(Context):
 
         to_folderid = self.id(to_folder)
         param = {'fileId': fileid, 'fields': 'parents', 'supportsAllDrives': True}
-        oldfile = self.cx.files().get(**param).execute()
+        oldfile = self.cx.files().get(**param).execute(num_retries=5)
         previous_folders = ','.join(oldfile.get('parents'))
         param = {
             'fileId': fileid,
@@ -428,7 +430,7 @@ class Drive(Context):
             'fields': 'id, parents',
             'supportsAllDrives': True,
         }
-        self.cx.files().update(**param).execute()
+        self.cx.files().update(**param).execute(num_retries=5)
         self.clear_cache()
         logger.info(f'Moved {fname} to Drive folder {to_folder}')
 
@@ -474,7 +476,7 @@ class Drive(Context):
         body = {'name': dest_name, 'parents': [dest_folderid]}
         result = self.cx.files().copy(
             fileId=fileid, body=body,
-            supportsAllDrives=True, fields='id, name').execute()
+            supportsAllDrives=True, fields='id, name').execute(num_retries=5)
         logger.info(f"Copied {fname} to {result['name']}")
         return result['id']
 
@@ -552,7 +554,7 @@ class Drive(Context):
             }
             created = self.cx.files().create(body=meta,
                                              supportsAllDrives=True,
-                                             fields='id').execute()
+                                             fields='id').execute(num_retries=5)
             parent_id = created['id']
             logger.info(f'Created folder {current_path} with id {parent_id}')
         self.clear_cache()
@@ -571,7 +573,7 @@ class Drive(Context):
                 pageToken=tok,
                 **SHARED_DRIVE_EXTRA,
                 )
-            resp = self.cx.files().list(**param).execute()
+            resp = self.cx.files().list(**param).execute(num_retries=5)
             results.extend(resp.get('files', []))
             tok = resp.get('nextPageToken')
             if tok is None:
@@ -616,19 +618,26 @@ class Drive(Context):
             self.move_tree(child_path, dest_path)
 
         for f in tqdm(files, desc=f'Moving {folder_name}', unit='file', leave=False):
-            self.cx.files().update(
-                fileId=f['id'],
-                addParents=dest_id,
-                removeParents=src_folder_id,
-                fields='id, parents',
-                supportsAllDrives=True,
-                ).execute()
+            try:
+                self.cx.files().update(
+                    fileId=f['id'],
+                    addParents=dest_id,
+                    removeParents=src_folder_id,
+                    fields='id, parents',
+                    supportsAllDrives=True,
+                    ).execute(num_retries=5)
+            except HttpError as exc:
+                if is_rate_limit(exc):
+                    raise RateLimitError(
+                        f'Rate limit persisted after retries moving {f["name"]}'
+                        ) from exc
+                raise
 
         self.clear_cache()
         remaining = self._list_children(src_folder_id)
         if not remaining:
             self.cx.files().delete(
-                fileId=src_folder_id, supportsAllDrives=True).execute()
+                fileId=src_folder_id, supportsAllDrives=True).execute(num_retries=5)
             logger.info(f'Deleted empty source folder {folder}')
 
     def _validate_folder(self, folder: str) -> None:
@@ -675,7 +684,7 @@ class Drive(Context):
                 pageToken=page_token,
                 **SHARED_DRIVE_EXTRA,
             )
-            response = self.cx.files().list(**param).execute()
+            response = self.cx.files().list(**param).execute(num_retries=5)
             for f in response['files']:
                 logger.debug(f"Found file: {f['name']}")
                 return f['id']
@@ -698,7 +707,7 @@ class Drive(Context):
                 pageToken=tok,
                 **SHARED_DRIVE_EXTRA,
             )
-            resp = self.cx.files().list(**param).execute()
+            resp = self.cx.files().list(**param).execute(num_retries=5)
             for f in resp['files']:
                 logger.info(f"Found folder: {f['name']}")
                 return f['id']

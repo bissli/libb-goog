@@ -43,7 +43,7 @@ class Gmail(Context, mail.MailClient):
     def get_profile(self) -> dict[str, Any]:
         """Get Gmail profile information.
         """
-        return self.cx.users().getProfile(userId=self.account).execute()
+        return self.cx.users().getProfile(userId=self.account).execute(num_retries=3)
 
     def list_emails(self, **kw: Any) -> dict[str, Any]:
         """Get email search result container, but don't pull actual emails.
@@ -53,7 +53,7 @@ class Gmail(Context, mail.MailClient):
         if token:
             kw['pageToken'] = token
         logger.info(f"Searching Gmail API for {self.account} {kw['q']}")
-        res = self.cx.users().messages().list(userId=self.account, **kw).execute()
+        res = self.cx.users().messages().list(userId=self.account, **kw).execute(num_retries=3)
         logger.info(f"Total matched emails estimate: {res['resultSizeEstimate']}")
         return res
 
@@ -66,7 +66,7 @@ class Gmail(Context, mail.MailClient):
             for row in messages:
                 try:
                     param = {'userId': self.account, 'id': row['id'], 'format': 'raw'}
-                    data = self.cx.users().messages().get(**param).execute()
+                    data = self.cx.users().messages().get(**param).execute(num_retries=3)
                 except errors.HttpError as exc:
                     logger.error(f"API error fetching message {row['id']}: {exc}")
                     continue
@@ -95,7 +95,7 @@ class Gmail(Context, mail.MailClient):
             for row in messages:
                 try:
                     param = {'userId': self.account, 'id': row['id'], 'body': {label_key: [label]}}
-                    self.cx.users().messages().modify(**param).execute()
+                    self.cx.users().messages().modify(**param).execute(num_retries=3)
                     logger.info(f"{action.capitalize()} {label} label for message {row['id']}")
                 except errors.HttpError as exc:
                     logger.error(f"Failed to modify {label} label for message {row['id']}: {exc}")
@@ -153,7 +153,7 @@ class Gmail(Context, mail.MailClient):
 
         try:
             body_dict = {'raw': base64.urlsafe_b64encode(msg.as_bytes()).decode()}
-            res = self.cx.users().messages().send(userId=self.account, body=body_dict).execute()
+            res = self.cx.users().messages().send(userId=self.account, body=body_dict).execute(num_retries=3)
             logger.info(f"Message Id: {res['id']}")
             return res
         except errors.HttpError as err:
