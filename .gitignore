@@ -45,3 +45,5 @@ proto
 .envrc
 TODO.*
 *.pkl
+
+scripts/
