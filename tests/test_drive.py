@@ -749,6 +749,44 @@ class TestCacheBehavior:
         assert files.list.return_value.execute.call_count == 2
 
 
+class TestTrashedFilter:
+    """Tests for trashed=false in name-based resolution queries.
+    """
+
+    def test_get_file_id_excludes_trashed(self, mock_drive, mock_cx):
+        """Verify _get_file_id query includes trashed=false.
+        """
+        files = mock_cx.files.return_value
+        file_resp = files_list_response([file_entry('report.pdf', 'file_abc')])
+        files.list.return_value.execute.return_value = file_resp
+        mock_drive._get_file_id('/TestDrive/', 'report.pdf')
+        query = files.list.call_args[1]['q']
+        assert 'trashed=false' in query
+
+    def test_resolve_fileid_excludes_trashed(self, mock_drive, mock_cx):
+        """Verify _resolve_fileid query includes trashed=false.
+        """
+        files = mock_cx.files.return_value
+        file_resp = files_list_response(
+            [file_entry('data.csv', 'file_data')])
+        files.list.return_value.execute.return_value = file_resp
+        mock_drive._resolve_fileid('/TestDrive/data.csv')
+        query = files.list.call_args[1]['q']
+        assert 'trashed=false' in query
+
+    def test_resolve_segment_excludes_trashed(self, mock_drive, mock_cx):
+        """Verify _resolve_segment query includes trashed=false.
+        """
+        files = mock_cx.files.return_value
+        folder_resp = files_list_response(
+            [folder_entry('sub', 'folder_sub')])
+        mock_drive.clear_cache()
+        files.list.return_value.execute.return_value = folder_resp
+        mock_drive._resolve_segment('root123', 'sub')
+        query = files.list.call_args[1]['q']
+        assert 'trashed=false' in query
+
+
 class TestMakedirs:
     """Tests for makedirs() recursive folder creation.
     """

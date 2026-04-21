@@ -91,7 +91,7 @@ class Drive(Context):
             return None
 
         clean_name = clean_filename(filename)
-        query = f"name='{clean_name}' and '{folderid}' in parents"
+        query = f"name='{clean_name}' and '{folderid}' in parents and trashed=false"
         page_token = None
 
         while True:
@@ -674,7 +674,7 @@ class Drive(Context):
         if folderid is None:
             return None
         fname = clean_filename(fname)
-        query = f"name='{fname}' and '{folderid}' in parents"
+        query = f"name='{fname}' and '{folderid}' in parents and trashed=false"
         page_token = None
         while True:
             param = dict(
@@ -697,7 +697,7 @@ class Drive(Context):
     def _resolve_segment(self, parent_id: str, segment: str) -> str | None:
         """Resolve a single folder segment within a parent folder.
         """
-        q = f"name='{segment}' and mimeType='{FOLDER_MIME}' and '{parent_id}' in parents"
+        q = f"name='{segment}' and mimeType='{FOLDER_MIME}' and '{parent_id}' in parents and trashed=false"
         tok = None
         while True:
             param = dict(
