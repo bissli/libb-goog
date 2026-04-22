@@ -9,7 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from goog.base import RateLimitError, clean_filename
-from goog.drive import FOLDER_MIME
+from goog.drive import CHANGES_FIELDS, FOLDER_MIME
+from tests.fixtures.drive_responses import change_entry, changes_list_response
 from tests.fixtures.drive_responses import file_entry, files_get_response
 from tests.fixtures.drive_responses import files_list_response, folder_entry
 from tests.fixtures.drive_responses import http_error_from_fixture
@@ -414,6 +415,155 @@ class TestSearch:
         files.list.return_value.execute.side_effect = [folder_resp, search_resp]
         results = mock_drive.search(folder='/TestDrive/docs')
         assert len(results) == 1
+
+
+class TestChangesToken:
+    """Tests for changes_token() method.
+    """
+
+    def test_returns_token_string(self, mock_drive, mock_cx):
+        """Verify changes_token returns the startPageToken string.
+        """
+        changes = mock_cx.changes.return_value
+        changes.getStartPageToken.return_value.execute.return_value = {
+            'startPageToken': '12345',
+        }
+        result = mock_drive.changes_token()
+        assert result == '12345'
+
+    def test_always_passes_supports_all_drives(self, mock_drive, mock_cx):
+        """Verify supportsAllDrives is always passed, even without drive_id.
+        """
+        changes = mock_cx.changes.return_value
+        changes.getStartPageToken.return_value.execute.return_value = {
+            'startPageToken': '12345',
+        }
+        mock_drive.changes_token()
+        call_kwargs = changes.getStartPageToken.call_args[1]
+        assert call_kwargs['supportsAllDrives'] is True
+        assert 'driveId' not in call_kwargs
+
+    def test_passes_drive_id(self, mock_drive, mock_cx):
+        """Verify driveId is passed when drive_id is provided.
+        """
+        changes = mock_cx.changes.return_value
+        changes.getStartPageToken.return_value.execute.return_value = {
+            'startPageToken': 'drive_tok',
+        }
+        result = mock_drive.changes_token(drive_id='drive_abc')
+        call_kwargs = changes.getStartPageToken.call_args[1]
+        assert call_kwargs['driveId'] == 'drive_abc'
+        assert call_kwargs['supportsAllDrives'] is True
+        assert result == 'drive_tok'
+
+
+class TestChanges:
+    """Tests for changes() method.
+    """
+
+    def test_returns_changes_and_token(self, mock_drive, mock_cx):
+        """Verify changes returns tuple of (changes_list, new_token).
+        """
+        changes_resource = mock_cx.changes.return_value
+        entry = change_entry(
+            'file_1', file=file_entry('doc.txt', 'file_1'))
+        resp = changes_list_response(
+            [entry], new_start_page_token='new_tok')
+        changes_resource.list.return_value.execute.return_value = resp
+        result_changes, result_token = mock_drive.changes('start_tok')
+        assert len(result_changes) == 1
+        assert result_changes[0]['fileId'] == 'file_1'
+        assert result_token == 'new_tok'
+
+    def test_handles_pagination(self, mock_drive, mock_cx):
+        """Verify changes combines results across multiple pages.
+        """
+        changes_resource = mock_cx.changes.return_value
+        entry1 = change_entry(
+            'file_1', file=file_entry('a.txt', 'file_1'))
+        entry2 = change_entry(
+            'file_2', file=file_entry('b.txt', 'file_2'))
+        page1 = changes_list_response(
+            [entry1], next_page_token='page2_tok')
+        page2 = changes_list_response(
+            [entry2], new_start_page_token='final_tok')
+        changes_resource.list.return_value.execute.side_effect = [
+            page1, page2]
+        result_changes, result_token = mock_drive.changes(
+            'start_tok', limit=2000)
+        assert len(result_changes) == 2
+        assert result_changes[0]['fileId'] == 'file_1'
+        assert result_changes[1]['fileId'] == 'file_2'
+        assert result_token == 'final_tok'
+
+    def test_respects_limit(self, mock_drive, mock_cx):
+        """Verify changes stops at limit and returns resume token.
+        """
+        changes_resource = mock_cx.changes.return_value
+        entries = [
+            change_entry(f'file_{i}', file=file_entry(f'f{i}.txt', f'file_{i}'))
+            for i in range(5)]
+        resp = changes_list_response(
+            entries, next_page_token='resume_tok')
+        changes_resource.list.return_value.execute.return_value = resp
+        result_changes, result_token = mock_drive.changes(
+            'start_tok', limit=3)
+        assert len(result_changes) == 3
+        assert result_token == 'resume_tok'
+
+    def test_empty_changes(self, mock_drive, mock_cx):
+        """Verify empty changes returns empty list with valid token.
+        """
+        changes_resource = mock_cx.changes.return_value
+        resp = changes_list_response([], new_start_page_token='new_tok')
+        changes_resource.list.return_value.execute.return_value = resp
+        result_changes, result_token = mock_drive.changes('start_tok')
+        assert result_changes == []
+        assert result_token == 'new_tok'
+
+    def test_passes_drive_id(self, mock_drive, mock_cx):
+        """Verify driveId is passed to changes.list when provided.
+        """
+        changes_resource = mock_cx.changes.return_value
+        resp = changes_list_response([], new_start_page_token='tok')
+        changes_resource.list.return_value.execute.return_value = resp
+        mock_drive.changes('start_tok', drive_id='drive_xyz')
+        call_kwargs = changes_resource.list.call_args[1]
+        assert call_kwargs['driveId'] == 'drive_xyz'
+
+    def test_always_includes_shared_drive_params(self, mock_drive, mock_cx):
+        """Verify SHARED_DRIVE_EXTRA params are always passed.
+        """
+        changes_resource = mock_cx.changes.return_value
+        resp = changes_list_response([], new_start_page_token='tok')
+        changes_resource.list.return_value.execute.return_value = resp
+        mock_drive.changes('start_tok')
+        call_kwargs = changes_resource.list.call_args[1]
+        assert call_kwargs['includeItemsFromAllDrives'] is True
+        assert call_kwargs['supportsAllDrives'] is True
+
+    def test_passes_changes_fields(self, mock_drive, mock_cx):
+        """Verify CHANGES_FIELDS is passed as fields parameter.
+        """
+        changes_resource = mock_cx.changes.return_value
+        resp = changes_list_response([], new_start_page_token='tok')
+        changes_resource.list.return_value.execute.return_value = resp
+        mock_drive.changes('start_tok')
+        call_kwargs = changes_resource.list.call_args[1]
+        assert call_kwargs['fields'] == CHANGES_FIELDS
+
+    def test_removed_file_has_no_file_metadata(self, mock_drive, mock_cx):
+        """Verify removed entries without file metadata are returned as-is.
+        """
+        changes_resource = mock_cx.changes.return_value
+        entry = change_entry('file_gone', removed=True)
+        resp = changes_list_response(
+            [entry], new_start_page_token='new_tok')
+        changes_resource.list.return_value.execute.return_value = resp
+        result_changes, _ = mock_drive.changes('start_tok')
+        assert len(result_changes) == 1
+        assert result_changes[0]['removed'] is True
+        assert 'file' not in result_changes[0]
 
 
 class TestCopy:

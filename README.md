@@ -144,6 +144,42 @@ drive.move('SharedDrive/Inbox/file.pdf', 'SharedDrive/Archive')
 drive.delete('MyDocs/temp/old_file.txt')
 ```
 
+#### Change Tracking
+
+The Changes API provides efficient incremental change detection across an
+entire drive, avoiding full directory tree walks on each connection.
+
+```python
+# First time: capture current state
+token = drive.changes_token()
+save_token(token)  # persist externally (file, database, etc.)
+
+# Later: fetch only what changed
+token = load_token()
+changes, new_token = drive.changes(token)
+for change in changes:
+    if change['removed']:
+        print(f"Deleted: {change['fileId']}")
+    else:
+        f = change['file']
+        print(f"Modified: {f['name']} ({f['id']})")
+save_token(new_token)
+
+# Scope to a specific Shared Drive
+token = drive.changes_token(drive_id='0ABcDeFgHiJk')
+changes, new_token = drive.changes(token, drive_id='0ABcDeFgHiJk')
+```
+
+**Notes:**
+- The Changes API is **drive-wide**, not folder-scoped. For changes within a
+  specific folder, use `walk(since=...)` instead.
+- Tokens are scoped per-drive and per-user. Do not mix tokens across different
+  `drive_id` values or accounts.
+- Token persistence is the caller's responsibility (tokens survive across
+  sessions; the library does not store them).
+- A `limit` parameter (default 1000) controls how many changes are returned
+  per call. Pass a higher limit for bulk sync.
+
 ### Sheets
 
 ```python

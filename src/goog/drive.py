@@ -34,6 +34,11 @@ GOOGLE_EXPORT_DEFAULTS = {
 INFO_FIELDS = 'id, name, mimeType, size, createdTime, modifiedTime, parents, webViewLink, trashed'
 SEARCH_FIELDS = f'nextPageToken, files({INFO_FIELDS})'
 
+CHANGE_FILE_FIELDS = 'id, name, mimeType, size, modifiedTime, parents, trashed'
+CHANGES_FIELDS = (
+    f'nextPageToken, newStartPageToken, '
+    f'changes(fileId, removed, time, changeType, driveId, file({CHANGE_FILE_FIELDS}))')
+
 
 class Drive(Context):
     """Google Drive API client for file operations.
@@ -364,6 +369,55 @@ class Drive(Context):
                 break
         logger.info(f'Search returned {len(results)} results')
         return results
+
+    def changes_token(self, *, drive_id: str | None = None) -> str:
+        """Get a page token representing the current Drive state.
+        """
+        param: dict[str, Any] = {'supportsAllDrives': True}
+        if drive_id:
+            param['driveId'] = drive_id
+        resp = self.cx.changes().getStartPageToken(**param).execute(
+            num_retries=5)
+        token = resp['startPageToken']
+        logger.debug(f'Changes start token (drive_id={drive_id})')
+        return token
+
+    def changes(self, token: str, *, drive_id: str | None = None,
+                limit: int = 1000) -> tuple[list[dict[str, Any]], str]:
+        """List changes since the given page token.
+
+        Returns a tuple of (changes, new_token). The new_token should
+        be persisted for the next poll. Tokens are scoped per-drive
+        and per-user -- do not mix tokens across different drive_id
+        values or accounts.
+
+        The Changes API is drive-wide, not folder-scoped. For changes
+        within a specific folder, use walk(since=...) instead.
+        """
+        changes: list[dict[str, Any]] = []
+        tok = token
+        while len(changes) < limit:
+            page_size = min(limit - len(changes), 1000)
+            param: dict[str, Any] = dict(
+                pageToken=tok,
+                fields=CHANGES_FIELDS,
+                pageSize=page_size,
+                **SHARED_DRIVE_EXTRA,
+            )
+            if drive_id:
+                param['driveId'] = drive_id
+            resp = self.cx.changes().list(**param).execute(num_retries=5)
+            for c in resp.get('changes', []):
+                changes.append(c)
+                if len(changes) >= limit:
+                    break
+            logger.debug(f'Fetched {len(resp.get("changes", []))} changes')
+            tok = resp.get('nextPageToken')
+            if tok is None:
+                break
+        new_token = resp.get('newStartPageToken', tok)
+        logger.info(f'Listed {len(changes)} total changes')
+        return changes, new_token
 
     @overload
     def info(self, filepath: str) -> dict[str, Any]: ...

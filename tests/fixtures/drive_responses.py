@@ -68,6 +68,38 @@ def files_get_response(file_id: str, name: str,
     return resp
 
 
+def change_entry(file_id: str, removed: bool = False,
+                 time: str = '2026-01-15T12:00:00.000Z',
+                 change_type: str = 'file',
+                 file: dict[str, Any] | None = None,
+                 **extra: Any) -> dict[str, Any]:
+    """Build a single change record dict.
+    """
+    entry: dict[str, Any] = {
+        'fileId': file_id,
+        'removed': removed,
+        'time': time,
+        'changeType': change_type,
+    }
+    if file is not None:
+        entry['file'] = file
+    entry.update(extra)
+    return entry
+
+
+def changes_list_response(changes: list[dict],
+                          next_page_token: str | None = None,
+                          new_start_page_token: str | None = None) -> dict:
+    """Build a changes().list() response.
+    """
+    resp: dict[str, Any] = {'changes': changes}
+    if next_page_token:
+        resp['nextPageToken'] = next_page_token
+    if new_start_page_token:
+        resp['newStartPageToken'] = new_start_page_token
+    return resp
+
+
 def http_error_from_fixture(name: str, status: int = 403) -> HttpError:
     """Build an HttpError from a JSON fixture file.
     """
