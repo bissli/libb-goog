@@ -419,6 +419,66 @@ class Drive(Context):
         logger.info(f'Listed {len(changes)} total changes')
         return changes, new_token
 
+    @cachu.cache(ttl=1800, tag='folders', backend='memory', package='goog',
+                 cache_if=lambda r: r is not None)
+    def _resolve_parent(self, folder_id: str) -> tuple[str, str | None] | None:
+        """Resolve a folder ID to (name, parent_id).
+
+        Returns None if the folder does not exist or is inaccessible.
+        Results are cached for 30 minutes matching _resolve_segment.
+        """
+        try:
+            resp = self.cx.files().get(
+                fileId=folder_id,
+                fields='name, parents',
+                **SHARED_DRIVE_EXTRA,
+            ).execute(num_retries=5)
+        except HttpError as exc:
+            if exc.resp.status == 404:
+                return None
+            raise
+        parent_id = resp.get('parents', [None])[0]
+        return resp['name'], parent_id
+
+    def path_from_id(self, file_id: str) -> str | None:
+        """Reconstruct a file's full path from its Drive file ID.
+
+        Walks up the parent chain until reaching a known root folder
+        from _rootid. Returns None if the file is outside all known
+        roots, exceeds the depth limit, or any parent is missing.
+        """
+        try:
+            resp = self.cx.files().get(
+                fileId=file_id,
+                fields='name, parents',
+                **SHARED_DRIVE_EXTRA,
+            ).execute(num_retries=5)
+        except HttpError as exc:
+            if exc.resp.status == 404:
+                return None
+            raise
+
+        rootid_reverse = {v: k for k, v in self._rootid.items()}
+
+        segments = [resp['name']]
+        parent_id = resp.get('parents', [None])[0]
+
+        for _ in range(50):
+            if parent_id is None:
+                return None
+            if parent_id in rootid_reverse:
+                segments.append(rootid_reverse[parent_id])
+                segments.reverse()
+                return posixpath.join(*segments)
+            result = self._resolve_parent(parent_id)
+            if result is None:
+                return None
+            name, parent_id = result
+            segments.append(name)
+
+        logger.warning(f'Depth limit reached resolving {file_id}')
+        return None
+
     @overload
     def info(self, filepath: str) -> dict[str, Any]: ...
 

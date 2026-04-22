@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from goog.base import RateLimitError, clean_filename
 from goog.drive import CHANGES_FIELDS, FOLDER_MIME
+from googleapiclient.errors import HttpError
 from tests.fixtures.drive_responses import change_entry, changes_list_response
 from tests.fixtures.drive_responses import file_entry, files_get_response
 from tests.fixtures.drive_responses import files_list_response, folder_entry
@@ -564,6 +565,202 @@ class TestChanges:
         assert len(result_changes) == 1
         assert result_changes[0]['removed'] is True
         assert 'file' not in result_changes[0]
+
+
+class TestResolveParent:
+    """Tests for _resolve_parent() cached helper.
+    """
+
+    def test_returns_name_and_parent_id(self, mock_drive, mock_cx):
+        """Verify _resolve_parent returns (name, parent_id) tuple.
+        """
+        files = mock_cx.files.return_value
+        files.get.return_value.execute.return_value = {
+            'name': 'SEC',
+            'parents': ['root123'],
+        }
+        result = mock_drive._resolve_parent('folder_sec')
+        assert result == ('SEC', 'root123')
+        files.get.assert_called_once()
+        call_kwargs = files.get.call_args[1]
+        assert call_kwargs['fileId'] == 'folder_sec'
+        assert 'parents' in call_kwargs['fields']
+
+    def test_returns_none_on_404(self, mock_drive, mock_cx):
+        """Verify _resolve_parent returns None for missing folders.
+        """
+        files = mock_cx.files.return_value
+        resp = MagicMock()
+        resp.status = 404
+        resp.reason = 'Not Found'
+        files.get.return_value.execute.side_effect = HttpError(
+            resp, b'not found')
+        result = mock_drive._resolve_parent('gone_folder')
+        assert result is None
+
+    def test_no_parents_returns_none_parent(self, mock_drive, mock_cx):
+        """Verify folder with no parents returns (name, None).
+        """
+        files = mock_cx.files.return_value
+        files.get.return_value.execute.return_value = {
+            'name': 'orphan',
+        }
+        result = mock_drive._resolve_parent('orphan_id')
+        assert result == ('orphan', None)
+
+
+class TestPathFromId:
+    """Tests for path_from_id() reverse resolution.
+    """
+
+    def _mock_files_get(self, mock_cx, responses):
+        """Set up files().get() to return different responses by fileId.
+        """
+        files = mock_cx.files.return_value
+
+        def get_side_effect(**kwargs):
+            fid = kwargs['fileId']
+            if fid in responses:
+                mock_exec = MagicMock()
+                mock_exec.execute.return_value = responses[fid]
+                return mock_exec
+            mock_exec = MagicMock()
+            resp = MagicMock()
+            resp.status = 404
+            resp.reason = 'Not Found'
+            mock_exec.execute.side_effect = HttpError(
+                resp, b'not found')
+            return mock_exec
+
+        files.get.side_effect = get_side_effect
+
+    def test_simple_two_level_path(self, mock_drive, mock_cx):
+        """Verify path reconstruction: root/SEC/doc.txt.
+        """
+        self._mock_files_get(mock_cx, {
+            'file_1': {
+                'name': 'doc.txt',
+                'parents': ['folder_sec'],
+            },
+            'folder_sec': {
+                'name': 'SEC',
+                'parents': ['root123'],
+            },
+        })
+        result = mock_drive.path_from_id('file_1')
+        assert result == 'TestDrive/SEC/doc.txt'
+
+    def test_file_directly_under_root(self, mock_drive, mock_cx):
+        """Verify path for file directly under a root folder.
+        """
+        self._mock_files_get(mock_cx, {
+            'file_1': {
+                'name': 'readme.txt',
+                'parents': ['root123'],
+            },
+        })
+        result = mock_drive.path_from_id('file_1')
+        assert result == 'TestDrive/readme.txt'
+
+    def test_deep_path(self, mock_drive, mock_cx):
+        """Verify path with 3 intermediate folders.
+        """
+        self._mock_files_get(mock_cx, {
+            'file_1': {
+                'name': 'report.pdf',
+                'parents': ['folder_aapl'],
+            },
+            'folder_aapl': {
+                'name': 'AAPL',
+                'parents': ['folder_sec'],
+            },
+            'folder_sec': {
+                'name': 'SEC',
+                'parents': ['root123'],
+            },
+        })
+        result = mock_drive.path_from_id('file_1')
+        assert result == 'TestDrive/SEC/AAPL/report.pdf'
+
+    def test_outside_known_roots(self, mock_drive, mock_cx):
+        """Verify None for files not under any known root.
+        """
+        self._mock_files_get(mock_cx, {
+            'file_1': {
+                'name': 'doc.txt',
+                'parents': ['unknown_folder'],
+            },
+            'unknown_folder': {
+                'name': 'SomeFolder',
+                'parents': ['other_unknown'],
+            },
+            'other_unknown': {
+                'name': 'Top',
+            },
+        })
+        result = mock_drive.path_from_id('file_1')
+        assert result is None
+
+    def test_file_not_found(self, mock_drive, mock_cx):
+        """Verify None when file ID does not exist.
+        """
+        self._mock_files_get(mock_cx, {})
+        result = mock_drive.path_from_id('nonexistent')
+        assert result is None
+
+    def test_depth_limit(self, mock_drive, mock_cx):
+        """Verify None when parent chain exceeds depth limit.
+        """
+        responses = {}
+        responses['file_1'] = {
+            'name': 'doc.txt',
+            'parents': ['folder_0'],
+        }
+        for i in range(60):
+            responses[f'folder_{i}'] = {
+                'name': f'level_{i}',
+                'parents': [f'folder_{i + 1}'],
+            }
+        self._mock_files_get(mock_cx, responses)
+        result = mock_drive.path_from_id('file_1')
+        assert result is None
+
+    def test_uses_other_root(self, mock_drive, mock_cx):
+        """Verify resolution works with multiple roots.
+        """
+        self._mock_files_get(mock_cx, {
+            'file_1': {
+                'name': 'data.csv',
+                'parents': ['root456'],
+            },
+        })
+        result = mock_drive.path_from_id('file_1')
+        assert result == 'Other/data.csv'
+
+    def test_sibling_files_use_cache(self, mock_drive, mock_cx):
+        """Verify second sibling reuses cached parent resolution.
+        """
+        self._mock_files_get(mock_cx, {
+            'file_a': {
+                'name': 'a.txt',
+                'parents': ['folder_sec'],
+            },
+            'file_b': {
+                'name': 'b.txt',
+                'parents': ['folder_sec'],
+            },
+            'folder_sec': {
+                'name': 'SEC',
+                'parents': ['root123'],
+            },
+        })
+        result_a = mock_drive.path_from_id('file_a')
+        assert result_a == 'TestDrive/SEC/a.txt'
+
+        call_count = mock_cx.files.return_value.get.call_count
+        result_b = mock_drive.path_from_id('file_b')
+        assert result_b == 'TestDrive/SEC/b.txt'
+        assert mock_cx.files.return_value.get.call_count == call_count + 1
 
 
 class TestCopy:
