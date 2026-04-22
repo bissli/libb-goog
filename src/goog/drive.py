@@ -287,9 +287,14 @@ class Drive(Context):
     def walk(self, folder: str = '/', recursive: bool = False,
              links: bool = False, ctime: bool = False, mtime: bool = False,
              since: str | None = None, exclude_trashed: bool = True,
-             detail: bool = False) -> Any:
+             detail: bool = False, flat: bool = False) -> Any:
         """List files in Drive folder by path, optionally recursive.
         """
+        if flat:
+            yield from self._walk_flat(
+                folder, detail=detail,
+                exclude_trashed=exclude_trashed)
+            return
         _fields = ['id', 'name', 'mimeType']
         if links:
             _fields.append('webContentLink')
@@ -306,7 +311,8 @@ class Drive(Context):
             q = f'{q} and trashed=false'
         tok = None
         while True:
-            param = dict(q=q, fields=fields, pageToken=tok, **SHARED_DRIVE_EXTRA)
+            param = dict(q=q, fields=fields, pageToken=tok,
+                         pageSize=1000, **SHARED_DRIVE_EXTRA)
             resp = self.cx.files().list(**param).execute(num_retries=5)
             files = resp['files']
             logger.info(f'Returned {len(files)} items from {folder}')
@@ -336,6 +342,92 @@ class Drive(Context):
                 logger.info('No more items, exiting')
                 break
             logger.debug('Next page token, continuing')
+
+    def _walk_flat(
+        self, folder: str = '/',
+        detail: bool = False,
+        exclude_trashed: bool = True,
+    ) -> Any:
+        """List all files under folder via flat drive-wide scan.
+
+        Much faster than per-folder walk for large trees:
+        O(total_files/1000) API calls instead of O(num_folders).
+        """
+        root_parts = folder.strip('/').split('/')
+        root_name = root_parts[0] if root_parts else None
+        drive_id = (self._rootid.get(root_name)
+                    if root_name else None)
+
+        folder_map: dict[str, tuple[str, str | None]] = {}
+        files: list[dict] = []
+
+        q = 'trashed=false' if exclude_trashed else None
+        tok = None
+        fields = ('nextPageToken, '
+                  'files(id, name, mimeType, parents)')
+        total_fetched = 0
+        while True:
+            param: dict[str, Any] = dict(
+                fields=fields, pageToken=tok, pageSize=1000,
+                **SHARED_DRIVE_EXTRA)
+            if drive_id:
+                param['corpora'] = 'drive'
+                param['driveId'] = drive_id
+            if q:
+                param['q'] = q
+            resp = self.cx.files().list(**param).execute(
+                num_retries=5)
+            page = resp.get('files', [])
+            total_fetched += len(page)
+            for f in page:
+                parent = (f.get('parents') or [None])[0]
+                if f['mimeType'] == FOLDER_MIME:
+                    folder_map[f['id']] = (f['name'], parent)
+                else:
+                    files.append(f)
+            tok = resp.get('nextPageToken')
+            if tok is None:
+                break
+        logger.info(
+            f'walk(flat): {len(files)} files, '
+            f'{len(folder_map)} folders '
+            f'({total_fetched} total)')
+
+        rootid_reverse = {v: k for k, v in self._rootid.items()}
+        prefix = folder.rstrip('/') + '/'
+
+        def _build_path(
+            name: str, parent_id: str | None,
+        ) -> str | None:
+            segments = [name]
+            pid = parent_id
+            for _ in range(50):
+                if pid is None:
+                    return None
+                if pid in rootid_reverse:
+                    segments.append(rootid_reverse[pid])
+                    segments.reverse()
+                    return posixpath.join(*segments)
+                if pid not in folder_map:
+                    return None
+                fname, pid = folder_map[pid]
+                segments.append(fname)
+            return None
+
+        for f in files:
+            parent = (f.get('parents') or [None])[0]
+            filepath = _build_path(f['name'], parent)
+            if filepath is None:
+                continue
+            if not filepath.startswith(prefix):
+                continue
+            if detail:
+                yield {
+                    'path': filepath, 'id': f['id'],
+                    'name': f['name'],
+                    'mimeType': f['mimeType']}
+            else:
+                yield filepath
 
     def search(self, query: str | None = None, *,
                folder: str | None = None,

@@ -296,6 +296,134 @@ class TestWalk:
         assert results == ['/TestDrive/readme.md']
 
 
+class TestWalkFlat:
+    """Tests for walk(flat=True) drive-wide scan mode.
+    """
+
+    def _setup_flat_responses(self, mock_cx, pages):
+        """Configure files().list() for flat walk pages.
+
+        Each page is a list of dicts with 'files' key and optional
+        'nextPageToken'.
+        """
+        files = mock_cx.files.return_value
+        files.list.return_value.execute.side_effect = pages
+
+    def test_walk_flat_yields_files_under_prefix(
+        self, mock_drive, mock_cx,
+    ):
+        """Verify flat walk yields files under requested folder.
+        """
+        self._setup_flat_responses(mock_cx, [
+            files_list_response([
+                {**folder_entry('SEC', 'folder_sec'),
+                 'parents': ['root123']},
+                {**file_entry('a.htm', 'id_a', 'text/html'),
+                 'parents': ['folder_sec']},
+                {**file_entry('b.htm', 'id_b', 'text/html'),
+                 'parents': ['folder_sec']},
+                {**file_entry('other.txt', 'id_oth', 'text/plain'),
+                 'parents': ['root456']},
+            ]),
+        ])
+        results = list(mock_drive.walk(
+            'TestDrive/SEC', recursive=True, flat=True))
+        assert results == [
+            'TestDrive/SEC/a.htm',
+            'TestDrive/SEC/b.htm',
+        ]
+
+    def test_walk_flat_detail_yields_dicts(
+        self, mock_drive, mock_cx,
+    ):
+        """Verify flat walk with detail=True yields metadata dicts.
+        """
+        self._setup_flat_responses(mock_cx, [
+            files_list_response([
+                {**folder_entry('SEC', 'folder_sec'),
+                 'parents': ['root123']},
+                {**file_entry('a.htm', 'id_a', 'text/html'),
+                 'parents': ['folder_sec']},
+            ]),
+        ])
+        results = list(mock_drive.walk(
+            'TestDrive/SEC', recursive=True,
+            flat=True, detail=True))
+        assert len(results) == 1
+        assert results[0]['path'] == 'TestDrive/SEC/a.htm'
+        assert results[0]['id'] == 'id_a'
+
+    def test_walk_flat_nested_folders(
+        self, mock_drive, mock_cx,
+    ):
+        """Verify flat walk reconstructs deep paths.
+        """
+        self._setup_flat_responses(mock_cx, [
+            files_list_response([
+                {**folder_entry('SEC', 'folder_sec'),
+                 'parents': ['root123']},
+                {**folder_entry('AAPL', 'folder_aapl'),
+                 'parents': ['folder_sec']},
+                {**file_entry('10-K.htm', 'id_10k', 'text/html'),
+                 'parents': ['folder_aapl']},
+            ]),
+        ])
+        results = list(mock_drive.walk(
+            'TestDrive/SEC', recursive=True, flat=True))
+        assert results == ['TestDrive/SEC/AAPL/10-K.htm']
+
+    def test_walk_flat_pagination(self, mock_drive, mock_cx):
+        """Verify flat walk handles multi-page responses.
+        """
+        self._setup_flat_responses(mock_cx, [
+            files_list_response(
+                [{**folder_entry('SEC', 'folder_sec'),
+                  'parents': ['root123']},
+                 {**file_entry('a.htm', 'id_a', 'text/html'),
+                  'parents': ['folder_sec']}],
+                next_page_token='tok2'),
+            files_list_response(
+                [{**file_entry('b.htm', 'id_b', 'text/html'),
+                  'parents': ['folder_sec']}]),
+        ])
+        results = list(mock_drive.walk(
+            'TestDrive/SEC', recursive=True, flat=True))
+        assert len(results) == 2
+        assert 'TestDrive/SEC/a.htm' in results
+        assert 'TestDrive/SEC/b.htm' in results
+
+    def test_walk_flat_uses_corpora_drive(
+        self, mock_drive, mock_cx,
+    ):
+        """Verify flat walk passes corpora=drive and driveId.
+        """
+        self._setup_flat_responses(mock_cx, [
+            files_list_response([]),
+        ])
+        list(mock_drive.walk(
+            'TestDrive', recursive=True, flat=True))
+        call_kwargs = (mock_cx.files.return_value
+                       .list.call_args[1])
+        assert call_kwargs['corpora'] == 'drive'
+        assert call_kwargs['driveId'] == 'root123'
+        assert call_kwargs['pageSize'] == 1000
+
+    def test_walk_flat_skips_orphaned_files(
+        self, mock_drive, mock_cx,
+    ):
+        """Verify files with unresolvable parents are skipped.
+        """
+        self._setup_flat_responses(mock_cx, [
+            files_list_response([
+                {**file_entry('orphan.htm', 'id_orph', 'text/html'),
+                 'parents': ['unknown_parent']},
+            ]),
+        ])
+        results = list(mock_drive.walk(
+            'TestDrive', recursive=True, flat=True))
+        assert results == []
+
+
 class TestDelete:
     """Tests for delete() method.
     """
