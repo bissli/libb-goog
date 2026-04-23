@@ -1272,9 +1272,12 @@ class TestMakedirs:
         files = mock_cx.files.return_value
         create_resp = {'id': 'new_deep_id'}
         files.create.return_value.execute.return_value = create_resp
-        exists_map = {'/TestDrive/sub': True, '/TestDrive/sub/deep': False}
-        with patch.object(mock_drive, 'exists', side_effect=lambda p: exists_map[p]), \
-        patch.object(mock_drive, 'id', return_value='folder_sub'):
+        segment_map = {
+            ('root123', 'sub'): 'folder_sub',
+            ('folder_sub', 'deep'): None,
+            }
+        with patch.object(mock_drive, '_resolve_segment',
+                          side_effect=lambda pid, seg: segment_map[(pid, seg)]):
             result = mock_drive.makedirs('/TestDrive/sub/deep')
         assert result == 'new_deep_id'
         files.create.assert_called_once()
@@ -1287,10 +1290,12 @@ class TestMakedirs:
         """Verify makedirs returns existing folder ID when path exists.
         """
         files = mock_cx.files.return_value
-        id_map = {'/TestDrive/sub': 'folder_sub',
-                  '/TestDrive/sub/deep': 'folder_deep'}
-        with patch.object(mock_drive, 'exists', return_value=True), \
-        patch.object(mock_drive, 'id', side_effect=lambda p: id_map[p]):
+        segment_map = {
+            ('root123', 'sub'): 'folder_sub',
+            ('folder_sub', 'deep'): 'folder_deep',
+            }
+        with patch.object(mock_drive, '_resolve_segment',
+                          side_effect=lambda pid, seg: segment_map[(pid, seg)]):
             result = mock_drive.makedirs('/TestDrive/sub/deep')
         assert result == 'folder_deep'
         files.create.assert_not_called()

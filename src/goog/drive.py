@@ -51,12 +51,15 @@ class Drive(Context):
         settings = get_settings()
         self._rootid = settings.get('rootid', {})
         self._tmpdir = settings.get('tmpdir')
-        cachu.configure(backend_default='memory')
+        cache_dir = os.path.join(os.path.expanduser('~'), '.cache', 'goog')
+        os.makedirs(cache_dir, exist_ok=True)
+        cachu.configure(backend_default='file', file_dir=cache_dir)
 
     def clear_cache(self) -> None:
         """Clear the folder resolution cache.
         """
-        cachu.cache_clear(tag='folders', backend='memory', package='goog')
+        cachu.cache_clear(tag='folders', package='goog')
+        cachu.cache_clear(tag='files', package='goog')
 
     def _normalize_path(self, path: str, trailing_slash: bool = False) -> str:
         """Normalize path to use forward slashes.
@@ -293,7 +296,9 @@ class Drive(Context):
         if flat:
             yield from self._walk_flat(
                 folder, detail=detail,
-                exclude_trashed=exclude_trashed)
+                exclude_trashed=exclude_trashed,
+                links=links, ctime=ctime, mtime=mtime,
+                since=since)
             return
         _fields = ['id', 'name', 'mimeType']
         if links:
@@ -347,6 +352,10 @@ class Drive(Context):
         self, folder: str = '/',
         detail: bool = False,
         exclude_trashed: bool = True,
+        links: bool = False,
+        ctime: bool = False,
+        mtime: bool = False,
+        since: str | None = None,
     ) -> Any:
         """List all files under folder via flat drive-wide scan.
 
@@ -361,10 +370,21 @@ class Drive(Context):
         folder_map: dict[str, tuple[str, str | None]] = {}
         files: list[dict] = []
 
-        q = 'trashed=false' if exclude_trashed else None
+        q_parts = []
+        if exclude_trashed:
+            q_parts.append('trashed=false')
+        if since:
+            q_parts.append(f"modifiedTime>='{since}'")
+        q = ' and '.join(q_parts) if q_parts else None
         tok = None
-        fields = ('nextPageToken, '
-                  'files(id, name, mimeType, parents)')
+        _file_fields = ['id', 'name', 'mimeType', 'parents']
+        if links:
+            _file_fields.append('webContentLink')
+        if ctime:
+            _file_fields.append('createdTime')
+        if mtime:
+            _file_fields.append('modifiedTime')
+        fields = f"nextPageToken, files({', '.join(_file_fields)})"
         total_fetched = 0
         while True:
             param: dict[str, Any] = dict(
@@ -422,10 +442,17 @@ class Drive(Context):
             if not filepath.startswith(prefix):
                 continue
             if detail:
-                yield {
+                entry = {
                     'path': filepath, 'id': f['id'],
                     'name': f['name'],
                     'mimeType': f['mimeType']}
+                if links:
+                    entry['webContentLink'] = f.get('webContentLink')
+                if ctime:
+                    entry['createdTime'] = f.get('createdTime')
+                if mtime:
+                    entry['modifiedTime'] = f.get('modifiedTime')
+                yield entry
             else:
                 yield filepath
 
@@ -511,7 +538,7 @@ class Drive(Context):
         logger.info(f'Listed {len(changes)} total changes')
         return changes, new_token
 
-    @cachu.cache(ttl=1800, tag='folders', backend='memory', package='goog',
+    @cachu.cache(ttl=1800, tag='folders', package='goog',
                  cache_if=lambda r: r is not None)
     def _resolve_parent(self, folder_id: str) -> tuple[str, str | None] | None:
         """Resolve a folder ID to (name, parent_id).
@@ -749,8 +776,9 @@ class Drive(Context):
         current_path = f'/{root}'
         for subfolder in subfolders:
             current_path = posixpath.join(current_path, subfolder)
-            if self.exists(current_path):
-                parent_id = self.id(current_path)
+            segment_id = self._resolve_segment(parent_id, subfolder)
+            if segment_id:
+                parent_id = segment_id
                 logger.debug(f'Folder {current_path} already exists')
                 continue
             meta = {
@@ -871,6 +899,8 @@ class Drive(Context):
             return
         raise FileExistsError(f'{filepath} already exists')
 
+    @cachu.cache(ttl=300, tag='files', package='goog',
+                 cache_if=lambda r: r is not None)
     def _resolve_fileid(self, filepath: str) -> str | None:
         """Resolve file ID from filepath.
         """
@@ -898,7 +928,7 @@ class Drive(Context):
             if page_token is None:
                 break
 
-    @cachu.cache(ttl=1800, tag='folders', backend='memory', package='goog',
+    @cachu.cache(ttl=1800, tag='folders', package='goog',
                  cache_if=lambda r: r is not None)
     def _resolve_segment(self, parent_id: str, segment: str) -> str | None:
         """Resolve a single folder segment within a parent folder.
