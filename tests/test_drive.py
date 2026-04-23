@@ -1135,7 +1135,9 @@ class TestExport:
 
         files.export_media.assert_called_once()
         call_kwargs = files.export_media.call_args[1]
-        assert call_kwargs['mimeType'] == 'text/csv'
+        assert call_kwargs['mimeType'] == (
+            'application/vnd.openxmlformats-officedocument'
+            '.spreadsheetml.sheet')
 
     def test_export_unknown_type_raises(self, mock_drive, mock_cx):
         """Verify export raises for unsupported source type without explicit mime.

@@ -24,9 +24,9 @@ SHARED_DRIVE_EXTRA = {'includeItemsFromAllDrives': True, 'supportsAllDrives': Tr
 FOLDER_MIME = 'application/vnd.google-apps.folder'
 
 GOOGLE_EXPORT_DEFAULTS = {
-    'application/vnd.google-apps.document': 'text/plain',
-    'application/vnd.google-apps.spreadsheet': 'text/csv',
-    'application/vnd.google-apps.presentation': 'text/plain',
+    'application/vnd.google-apps.document': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.google-apps.spreadsheet': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.google-apps.presentation': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     'application/vnd.google-apps.drawing': 'application/pdf',
     'application/vnd.google-apps.script': 'application/vnd.google-apps.script+json',
     }
