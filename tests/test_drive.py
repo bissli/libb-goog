@@ -1086,6 +1086,31 @@ class TestInfo:
         assert result['id'] == 'file_report'
         assert result['name'] == 'report.pdf'
 
+    def test_info_by_file_id_skips_path_resolution(
+            self, mock_drive, mock_cx):
+        """info(file_id=...) bypasses path resolution.
+        """
+        files = mock_cx.files.return_value
+        files.get.return_value.execute.return_value = {
+            'id': 'abc123',
+            'name': 'deck',
+            'modifiedTime': '2026-04-24T18:00:00.000Z',
+            }
+        with patch.object(
+                mock_drive, '_resolve_fileid') as resolve:
+            result = mock_drive.info(file_id='abc123')
+            resolve.assert_not_called()
+        assert result['id'] == 'abc123'
+        files.get.assert_called_with(
+            fileId='abc123', fields=files.get.call_args[1]['fields'],
+            supportsAllDrives=True)
+
+    def test_info_rejects_filepath_with_file_id(self, mock_drive):
+        """info(filepath=..., file_id=...) raises TypeError.
+        """
+        with pytest.raises(TypeError, match='file_id'):
+            mock_drive.info('/x', file_id='abc')
+
     def test_info_with_realistic_fixture(self, mock_drive, mock_cx):
         """Verify info works with real API response shapes.
         """
@@ -1131,6 +1156,39 @@ class TestRead:
 
         assert result.read() == content
         assert result.tell() == len(content)
+
+    def test_read_by_file_id_skips_path_resolution(
+            self, mock_drive, mock_cx):
+        """read(file_id=...) bypasses path resolution and uses get_media directly.
+        """
+        files = mock_cx.files.return_value
+        files.get.return_value.execute.return_value = {'name': 'data.bin'}
+
+        content = b'by-id'
+
+        with patch('goog.drive.MediaIoBaseDownload') as mock_dl:
+            mock_instance = MagicMock()
+            mock_instance.next_chunk.return_value = (None, True)
+
+            def init_side_effect(fh, request):
+                fh.write(content)
+                return mock_instance
+
+            mock_dl.side_effect = init_side_effect
+            with patch.object(
+                    mock_drive, '_resolve_fileid') as resolve:
+                result = mock_drive.read(file_id='abc123')
+                resolve.assert_not_called()
+
+        files.get_media.assert_called_once_with(fileId='abc123')
+        assert result.read() == content
+
+    def test_read_rejects_filepath_with_file_id(
+            self, mock_drive):
+        """Combining filepath and file_id raises TypeError.
+        """
+        with pytest.raises(TypeError, match='file_id'):
+            mock_drive.read('/x/y', file_id='abc')
 
 
 class TestDownload:
@@ -1190,6 +1248,28 @@ class TestExport:
 
         assert result.read() == content
         files.get.assert_not_called()
+
+    def test_export_by_file_id_skips_path_resolution(
+            self, mock_drive, mock_cx):
+        """export(file_id=...) bypasses path resolution.
+        """
+        files = mock_cx.files.return_value
+        files.get.return_value.execute.return_value = {'name': 'deck'}
+
+        with patch('goog.drive.MediaIoBaseDownload') as mock_dl:
+            mock_instance = MagicMock()
+            mock_instance.next_chunk.return_value = (None, True)
+            mock_dl.return_value = mock_instance
+            with patch.object(
+                    mock_drive, '_resolve_fileid') as resolve:
+                mock_drive.export(
+                    file_id='abc123', mime_type='application/pdf')
+                resolve.assert_not_called()
+
+        files.export_media.assert_called_once()
+        kwargs = files.export_media.call_args[1]
+        assert kwargs['fileId'] == 'abc123'
+        assert kwargs['mimeType'] == 'application/pdf'
 
     def test_export_auto_detects_mime(self, mock_drive, mock_cx):
         """Verify export auto-detects mime type from GOOGLE_EXPORT_DEFAULTS.
