@@ -76,9 +76,15 @@ class Drive(Context):
         return list(filter(len, posixpath.normpath(normalized).split('/')))
 
     def _check_filepath_usage(self, method_name: str, filepath: str | None,
-                              folder: str | None, filename: str | None) -> None:
+                              folder: str | None, filename: str | None,
+                              file_id: str | None = None) -> None:
         """Check and warn about deprecated filepath parameter usage.
         """
+        if file_id is not None:
+            if filepath is not None or folder is not None or filename is not None:
+                raise TypeError(
+                    'Cannot specify file_id together with filepath or folder/filename')
+            return
         if filepath is not None:
             if folder is not None or filename is not None:
                 raise TypeError('Cannot specify both filepath and folder/filename')
@@ -88,6 +94,14 @@ class Drive(Context):
                 DeprecationWarning,
                 stacklevel=3
             )
+
+    def _name_for_id(self, file_id: str) -> str:
+        """Look up a file's name by its Drive file ID for progress display.
+        """
+        meta = self.cx.files().get(
+            fileId=file_id, fields='name',
+            supportsAllDrives=True).execute(num_retries=5)
+        return meta['name']
 
     def _get_file_id(self, folder: str, filename: str) -> str | None:
         """Get file ID by folder and filename (handles filenames with /).
@@ -201,18 +215,26 @@ class Drive(Context):
     @overload
     def read(self, *, folder: str, filename: str, **kw) -> io.BytesIO: ...
 
+    @overload
+    def read(self, *, file_id: str, **kw) -> io.BytesIO: ...
+
     def read(self, filepath: str | None = None, *,
-             folder: str | None = None, filename: str | None = None, **kw) -> io.BytesIO:
+             folder: str | None = None, filename: str | None = None,
+             file_id: str | None = None, **kw) -> io.BytesIO:
         """Opens file from drive location as a buffered i/o stream.
         """
-        self._check_filepath_usage('read', filepath, folder, filename)
+        self._check_filepath_usage('read', filepath, folder, filename, file_id)
 
-        if filepath is not None:
+        if file_id is not None:
+            fileid = file_id
+            fname = self._name_for_id(file_id)
+        elif filepath is not None:
             fileid = self.id(filepath)
             fname = Path(filepath).name
         else:
             if folder is None or filename is None:
-                raise TypeError('Must provide either filepath or both folder and filename')
+                raise TypeError(
+                    'Must provide filepath, folder+filename, or file_id')
             fileid = self._get_file_id(folder, filename)
             if not fileid:
                 raise LookupError(f'{filename} not found in {folder}')
@@ -241,20 +263,28 @@ class Drive(Context):
     def export(self, *, folder: str, filename: str,
                mime_type: str | None = None) -> io.BytesIO: ...
 
+    @overload
+    def export(self, *, file_id: str,
+               mime_type: str | None = None) -> io.BytesIO: ...
+
     def export(self, filepath: str | None = None, *,
                folder: str | None = None, filename: str | None = None,
-               mime_type: str | None = None) -> io.BytesIO:
+               mime_type: str | None = None,
+               file_id: str | None = None) -> io.BytesIO:
         """Export a native Google Workspace file to a portable format.
         """
-        self._check_filepath_usage('export', filepath, folder, filename)
+        self._check_filepath_usage('export', filepath, folder, filename, file_id)
 
-        if filepath is not None:
+        if file_id is not None:
+            fileid = file_id
+            fname = self._name_for_id(file_id)
+        elif filepath is not None:
             fileid = self.id(filepath)
             fname = Path(filepath).name
         else:
             if folder is None or filename is None:
                 raise TypeError(
-                    'Must provide either filepath or both folder and filename')
+                    'Must provide filepath, folder+filename, or file_id')
             fileid = self._get_file_id(folder, filename)
             if not fileid:
                 raise LookupError(f'File {filename} not found in {folder}')
@@ -610,19 +640,25 @@ class Drive(Context):
     @overload
     def info(self, *, folder: str, filename: str) -> dict[str, Any]: ...
 
+    @overload
+    def info(self, *, file_id: str) -> dict[str, Any]: ...
+
     def info(self, filepath: str | None = None, *,
              folder: str | None = None,
-             filename: str | None = None) -> dict[str, Any]:
+             filename: str | None = None,
+             file_id: str | None = None) -> dict[str, Any]:
         """Get file metadata from Google Drive.
         """
-        self._check_filepath_usage('info', filepath, folder, filename)
+        self._check_filepath_usage('info', filepath, folder, filename, file_id)
 
-        if filepath is not None:
+        if file_id is not None:
+            fileid = file_id
+        elif filepath is not None:
             fileid = self.id(filepath)
         else:
             if folder is None or filename is None:
                 raise TypeError(
-                    'Must provide either filepath or both folder and filename')
+                    'Must provide filepath, folder+filename, or file_id')
             fileid = self._get_file_id(folder, filename)
             if not fileid:
                 raise LookupError(f'File {filename} not found in {folder}')
