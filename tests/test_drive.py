@@ -234,6 +234,56 @@ class TestWalk:
         assert results[0]['name'] == 'a.txt'
         assert results[0]['mimeType'] == 'text/plain'
 
+    def test_walk_detail_always_includes_timestamps(
+        self, mock_drive, mock_cx,
+    ):
+        """Verify detail=True populates createdTime/modifiedTime.
+
+        Timestamps are part of INFO_FIELDS and should always be
+        surfaced when callers ask for the dict shape, without
+        needing to pass mtime/ctime explicitly.
+        """
+        files = mock_cx.files.return_value
+        resp = files_list_response([
+            file_entry(
+                'a.txt', 'id_a', 'text/plain',
+                createdTime='2024-01-15T10:00:00.000Z',
+                modifiedTime='2026-04-23T18:54:42.114Z'),
+        ])
+        folder_resolve = files_list_response(
+            [folder_entry('docs', 'folder_docs')])
+        files.list.return_value.execute.side_effect = [
+            folder_resolve, resp]
+        results = list(mock_drive.walk(
+            '/TestDrive/docs', detail=True))
+        assert results[0]['createdTime'] == (
+            '2024-01-15T10:00:00.000Z')
+        assert results[0]['modifiedTime'] == (
+            '2026-04-23T18:54:42.114Z')
+
+    def test_walk_detail_fields_param_includes_timestamps(
+        self, mock_drive, mock_cx,
+    ):
+        """Verify detail=True widens the API fields= projection.
+
+        The fields= kwarg sent to files().list() must include
+        createdTime and modifiedTime so the API actually returns
+        them in the response.
+        """
+        files = mock_cx.files.return_value
+        resp = files_list_response([
+            file_entry('a.txt', 'id_a', 'text/plain'),
+        ])
+        folder_resolve = files_list_response(
+            [folder_entry('docs', 'folder_docs')])
+        files.list.return_value.execute.side_effect = [
+            folder_resolve, resp]
+        list(mock_drive.walk('/TestDrive/docs', detail=True))
+        list_calls = files.list.call_args_list
+        walk_call_fields = list_calls[-1].kwargs['fields']
+        assert 'createdTime' in walk_call_fields
+        assert 'modifiedTime' in walk_call_fields
+
     def test_walk_recursive(self, mock_drive, mock_cx):
         """Verify recursive walk descends into subfolders.
 
@@ -352,6 +402,30 @@ class TestWalkFlat:
         assert len(results) == 1
         assert results[0]['path'] == 'TestDrive/SEC/a.htm'
         assert results[0]['id'] == 'id_a'
+
+    def test_walk_flat_detail_always_includes_timestamps(
+        self, mock_drive, mock_cx,
+    ):
+        """Verify flat detail=True populates createdTime/modifiedTime.
+        """
+        self._setup_flat_responses(mock_cx, [
+            files_list_response([
+                {**folder_entry('SEC', 'folder_sec'),
+                 'parents': ['root123']},
+                {**file_entry(
+                    'a.htm', 'id_a', 'text/html',
+                    createdTime='2024-01-15T10:00:00.000Z',
+                    modifiedTime='2026-04-23T18:54:42.114Z'),
+                 'parents': ['folder_sec']},
+            ]),
+        ])
+        results = list(mock_drive.walk(
+            'TestDrive/SEC', recursive=True,
+            flat=True, detail=True))
+        assert results[0]['createdTime'] == (
+            '2024-01-15T10:00:00.000Z')
+        assert results[0]['modifiedTime'] == (
+            '2026-04-23T18:54:42.114Z')
 
     def test_walk_flat_nested_folders(
         self, mock_drive, mock_cx,

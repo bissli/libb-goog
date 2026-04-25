@@ -51,8 +51,8 @@ class Drive(Context):
         settings = get_settings()
         self._rootid = settings.get('rootid', {})
         self._tmpdir = settings.get('tmpdir')
-        cache_dir = os.path.join(os.path.expanduser('~'), '.cache', 'goog')
-        os.makedirs(cache_dir, exist_ok=True)
+        cache_dir = os.path.join(Path('~').expanduser(), '.cache', 'goog')
+        Path(cache_dir).mkdir(exist_ok=True, parents=True)
         cachu.configure(backend_default='file', file_dir=cache_dir)
 
     def clear_cache(self) -> None:
@@ -293,6 +293,9 @@ class Drive(Context):
              detail: bool = False, flat: bool = False) -> Any:
         """List files in Drive folder by path, optionally recursive.
         """
+        if detail:
+            ctime = True
+            mtime = True
         if flat:
             yield from self._walk_flat(
                 folder, detail=detail,
@@ -362,6 +365,9 @@ class Drive(Context):
         Much faster than per-folder walk for large trees:
         O(total_files/1000) API calls instead of O(num_folders).
         """
+        if detail:
+            ctime = True
+            mtime = True
         root_parts = folder.strip('/').split('/')
         root_name = root_parts[0] if root_parts else None
         drive_id = (self._rootid.get(root_name)
