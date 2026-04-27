@@ -52,6 +52,51 @@ configure(
 )
 ```
 
+### Inline Service-Account JSON (Lambda / Secrets Manager)
+
+Use `key_data` instead of `key` to supply the service-account JSON directly
+as a dict. This avoids writing the credentials to disk and is the right fit
+for AWS Lambda or other environments where the JSON comes from Secrets
+Manager, SSM Parameter Store, or an environment variable.
+
+```python
+import json, os
+
+sa_json = json.loads(os.environ['GOOGLE_SA_JSON'])
+
+configure(
+    account='your-email@domain.com',
+    cache_dir='/tmp/goog',
+    app_configs={
+        'drive': {
+            'key_data': sa_json,
+            'scopes': ['https://www.googleapis.com/auth/drive'],
+            'version': 'v3'
+        },
+        'sheets': {
+            'key_data': sa_json,
+            'scopes': ['https://www.googleapis.com/auth/spreadsheets']
+        }
+    }
+)
+```
+
+`key_data` and `key` are mutually substitutable - supply exactly one per app
+config. They can also be passed directly to `Drive(...)` or `Sheets(...)`
+as constructor kwargs to override the configured value.
+
+### Cache Directory
+
+`Drive` writes a small file-backed cache (used by `cachu`). The location is
+resolved in this order:
+
+1. `cache_dir` from `configure(...)` - explicit override
+2. `tmpdir` from `configure(...)` - reuses your temp directory
+3. `~/.cache/goog` - default
+
+On AWS Lambda set `cache_dir='/tmp/goog'` (or rely on `tmpdir='/tmp/...'`),
+since `$HOME` is read-only.
+
 ## Usage Examples
 
 ### Gmail
