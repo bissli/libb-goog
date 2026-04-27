@@ -45,13 +45,18 @@ class Drive(Context):
     """
 
     def __init__(self, account: str | None = None, key: str | None = None, scopes:
-                 list[str] | None = None, version: str | None = None) -> None:
+                 list[str] | None = None, version: str | None = None,
+                 key_data: dict | None = None) -> None:
         super().__init__(app='drive', account=account, key=key,
-                         scopes=scopes, version=version)
+                         scopes=scopes, version=version,
+                         key_data=key_data)
         settings = get_settings()
         self._rootid = settings.get('rootid', {})
         self._tmpdir = settings.get('tmpdir')
-        cache_dir = os.path.join(Path('~').expanduser(), '.cache', 'goog')
+        cache_dir = (
+            settings.get('cache_dir')
+            or self._tmpdir
+            or os.path.join(Path('~').expanduser(), '.cache', 'goog'))
         Path(cache_dir).mkdir(exist_ok=True, parents=True)
         cachu.configure(backend_default='file', file_dir=cache_dir)
 

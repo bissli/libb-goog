@@ -86,26 +86,35 @@ class Sheets:
     """
 
     def __init__(self, account: str | None = None, key: str | None = None,
-                 scopes: list[str] | None = None, dx: Drive | None = None) -> None:
+                 scopes: list[str] | None = None, dx: Drive | None = None,
+                 key_data: dict | None = None) -> None:
         settings = get_settings()
         if account is None:
             account = settings.get('account')
-        if key is None or scopes is None:
+        if (key is None and key_data is None) or scopes is None:
             app_configs = settings.get('app_configs', {})
             if 'sheets' not in app_configs:
                 raise ValueError('sheets app config required when not provided')
             sheets_config = app_configs['sheets']
-            key = key or sheets_config['key']
+            key = key or sheets_config.get('key')
+            key_data = key_data or sheets_config.get('key_data')
             scopes = scopes or sheets_config['scopes']
-        if account is None or key is None or scopes is None:
-            raise ValueError('account, key, and scopes required when not configured')
+        if (account is None or (key is None and key_data is None)
+                or scopes is None):
+            raise ValueError(
+                'account, scopes, and one of key/key_data required '
+                'when not configured')
 
-        creds = service_account.Credentials.from_service_account_file(key)
+        if key_data is not None:
+            creds = service_account.Credentials.from_service_account_info(key_data)
+        else:
+            creds = service_account.Credentials.from_service_account_file(key)
         creds = creds.with_scopes(scopes)
         creds = creds.with_subject(account)
         auth = gspread.utils.convert_credentials(creds)
         self._gx = gspread.Client(auth)
-        self._dx = dx or Drive(account=account, key=key, scopes=scopes)
+        self._dx = dx or Drive(
+            account=account, key=key, scopes=scopes, key_data=key_data)
         self._idcache: dict[str, str] = {}
 
     def id(self, filepath: str) -> str:

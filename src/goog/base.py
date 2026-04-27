@@ -95,7 +95,8 @@ class Context:
 
     def __init__(self, app: str | None = None, account: str | None = None,
                  key: str | None = None, scopes: list[str] | None = None,
-                 version: str | None = None) -> None:
+                 version: str | None = None,
+                 key_data: dict | None = None) -> None:
         if app is None:
             raise ValueError('app parameter is required')
         if account is None:
@@ -105,25 +106,35 @@ class Context:
 
         self.account = account
         self.app = app
-        self.cx = self._build_service(key, scopes, version)
+        self.cx = self._build_service(key, scopes, version, key_data)
 
     def _build_service(self, key: str | None, scopes: list[str] | None,
-                       version: str | None) -> Any:
+                       version: str | None,
+                       key_data: dict | None = None) -> Any:
         """Authenticate and build Google API service.
+
+        Either ``key`` (filesystem path to a service-account JSON) or
+        ``key_data`` (the service-account JSON inlined as a dict, e.g.
+        loaded from Secrets Manager) must be supplied. ``key_data`` is
+        used in environments without a writable disk such as Lambda.
         """
         app_configs = _settings.get('app_configs', {})
 
-        if key is None:
+        if key is None and key_data is None:
             if self.app not in app_configs:
                 raise ValueError(f'Unknown app: {self.app}')
             app_config = app_configs[self.app]
-            key = app_config['key']
+            key = app_config.get('key')
+            key_data = app_config.get('key_data')
             scopes = app_config['scopes']
             version = app_config.get('version')
         elif version is None and self.app in app_configs:
             version = app_configs[self.app].get('version')
 
-        creds = service_account.Credentials.from_service_account_file(key)
+        if key_data is not None:
+            creds = service_account.Credentials.from_service_account_info(key_data)
+        else:
+            creds = service_account.Credentials.from_service_account_file(key)
         creds = creds.with_scopes(scopes)
         creds = creds.with_subject(self.account)
         api = discovery.build(self.app, version, credentials=creds)
