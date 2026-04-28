@@ -100,11 +100,12 @@ def changes_list_response(changes: list[dict],
     return resp
 
 
-def http_error_from_fixture(name: str, status: int = 403) -> HttpError:
+def http_error_from_fixture(name: str, status: int = 403,
+                            reason: str = 'Forbidden') -> HttpError:
     """Build an HttpError from a JSON fixture file.
     """
     resp = MagicMock()
     resp.status = status
-    resp.reason = 'Forbidden'
+    resp.reason = reason
     content = (FIXTURES_DIR / f'{name}.json').read_bytes()
     return HttpError(resp, content)

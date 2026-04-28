@@ -164,6 +164,8 @@ class Drive(Context):
             display_name = filename
 
         self.cx.files().delete(fileId=fileid, supportsAllDrives=True).execute(num_retries=5)
+        if filepath is not None:
+            cachu.cache_delete(self._resolve_fileid, filepath=filepath)
         logger.info(f'Deleted {display_name} from drive')
 
     @overload
@@ -1078,15 +1080,24 @@ class Drive(Context):
     def _protect(self, filepath: str, overwrite: bool = False) -> None:
         """Prevent overwrite of existing file unless explicitly allowed.
         """
+        if self._resolve_fileid(filepath) is None:
+            return
+        if not overwrite:
+            raise FileExistsError(f'{filepath} already exists')
+        logger.info(f'Overwriting existing {filepath}')
         try:
-            self.id(filepath)
-        except LookupError:
-            return
-        if overwrite:
-            logger.info(f'Overwriting existing {filepath}')
             self.delete(filepath)
-            return
-        raise FileExistsError(f'{filepath} already exists')
+        except HttpError as exc:
+            if exc.resp.status == 404:
+                logger.warning(
+                    f'{filepath} resolved to a stale fileid; treating as already-gone')
+                cachu.cache_delete(self._resolve_fileid, filepath=filepath)
+                return
+            logger.error(
+                f'Delete failed for {filepath}: '
+                f'status={exc.resp.status} reason={exc.resp.reason} '
+                f'details={exc.error_details}')
+            raise
 
     @cachu.cache(ttl=300, tag='files', package='goog',
                  cache_if=lambda r: r is not None)

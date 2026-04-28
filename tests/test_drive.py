@@ -608,6 +608,25 @@ class TestDelete:
         call_kwargs = files.delete.call_args[1]
         assert call_kwargs['fileId'] == 'file_old'
 
+    def test_delete_invalidates_fileid_cache(self, mock_drive, mock_cx):
+        """Verify delete clears the cached fileid for the deleted path.
+        """
+        files = mock_cx.files.return_value
+        files.list.return_value.execute.return_value = files_list_response(
+            [file_entry('old.txt', 'file_old')])
+        files.delete.return_value.execute.return_value = None
+        first = mock_drive._resolve_fileid('/TestDrive/old.txt')
+        assert first == 'file_old'
+        files.list.return_value.execute.return_value = files_list_response([])
+        cached = mock_drive._resolve_fileid('/TestDrive/old.txt')
+        assert cached == 'file_old'
+        files.list.return_value.execute.return_value = files_list_response(
+            [file_entry('old.txt', 'file_old')])
+        mock_drive.delete('/TestDrive/old.txt')
+        files.list.return_value.execute.return_value = files_list_response([])
+        after = mock_drive._resolve_fileid('/TestDrive/old.txt')
+        assert after is None
+
 
 class TestProtect:
     """Tests for _protect() overwrite guard.
@@ -641,6 +660,58 @@ class TestProtect:
         files.delete.assert_called_once()
         call_kwargs = files.delete.call_args[1]
         assert call_kwargs['fileId'] == 'file_exists'
+
+    def test_protect_overwrite_swallows_stale_404(self, mock_drive, mock_cx, caplog):
+        """Verify _protect tolerates a 404 from delete (stale cached fileid).
+        """
+        files = mock_cx.files.return_value
+        file_resp = files_list_response([file_entry('existing.txt', 'stale_id')])
+        files.list.return_value.execute.return_value = file_resp
+        files.delete.return_value.execute.side_effect = http_error_from_fixture(
+            'files_delete_not_found', status=404, reason='Not Found')
+        with caplog.at_level('WARNING'):
+            mock_drive._protect('/TestDrive/existing.txt', overwrite=True)
+        assert any('stale fileid' in r.message for r in caplog.records)
+
+    def test_protect_overwrite_propagates_403(self, mock_drive, mock_cx, caplog):
+        """Verify _protect re-raises non-404 HttpError with diagnostic logging.
+        """
+        files = mock_cx.files.return_value
+        file_resp = files_list_response([file_entry('existing.txt', 'file_exists')])
+        files.list.return_value.execute.return_value = file_resp
+        files.delete.return_value.execute.side_effect = http_error_from_fixture(
+            'files_delete_insufficient_permissions', status=403, reason='Forbidden')
+        with caplog.at_level('ERROR'):
+            with pytest.raises(HttpError):
+                mock_drive._protect('/TestDrive/existing.txt', overwrite=True)
+        assert any('status=403' in r.message for r in caplog.records)
+        assert any('insufficientFilePermissions' in r.message
+                   for r in caplog.records)
+
+    def test_protect_overwrite_propagates_500(self, mock_drive, mock_cx):
+        """Verify _protect re-raises 5xx HttpError after retries.
+        """
+        files = mock_cx.files.return_value
+        file_resp = files_list_response([file_entry('existing.txt', 'file_exists')])
+        files.list.return_value.execute.return_value = file_resp
+        resp = MagicMock()
+        resp.status = 500
+        resp.reason = 'Internal Server Error'
+        files.delete.return_value.execute.side_effect = HttpError(resp, b'{}')
+        with pytest.raises(HttpError):
+            mock_drive._protect('/TestDrive/existing.txt', overwrite=True)
+
+    def test_protect_does_not_target_folder_when_file_missing(
+            self, mock_drive, mock_cx):
+        """Verify _protect does not delete a folder when the file is absent.
+
+        Drive.id() falls back to the parent folder id when the file is
+        missing; _protect must not act on that folder id.
+        """
+        files = mock_cx.files.return_value
+        files.list.return_value.execute.return_value = files_list_response([])
+        mock_drive._protect('/TestDrive/missing.txt', overwrite=True)
+        files.delete.assert_not_called()
 
 
 class TestValidateFolder:
