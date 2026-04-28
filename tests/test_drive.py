@@ -497,6 +497,87 @@ class TestWalkFlat:
             'TestDrive', recursive=True, flat=True))
         assert results == []
 
+    def test_walk_flat_paged_yields_per_page_tuples(
+        self, mock_drive, mock_cx,
+    ):
+        """Verify paged=True yields (entries, next_token) per page.
+        """
+        self._setup_flat_responses(mock_cx, [
+            files_list_response(
+                [{**folder_entry('SEC', 'folder_sec'),
+                  'parents': ['root123']},
+                 {**file_entry('a.htm', 'id_a', 'text/html'),
+                  'parents': ['folder_sec']}],
+                next_page_token='tok2'),
+            files_list_response(
+                [{**file_entry('b.htm', 'id_b', 'text/html'),
+                  'parents': ['folder_sec']}]),
+        ])
+        pages = list(mock_drive.walk(
+            'TestDrive/SEC', flat=True, paged=True))
+        assert len(pages) == 2
+        page_a, tok_a = pages[0]
+        page_b, tok_b = pages[1]
+        assert page_a == ['TestDrive/SEC/a.htm']
+        assert tok_a == 'tok2'
+        assert page_b == ['TestDrive/SEC/b.htm']
+        assert tok_b is None
+
+    def test_walk_flat_paged_resume_token_passed_to_drive(
+        self, mock_drive, mock_cx,
+    ):
+        """Verify page_token kwarg is forwarded to first files.list call.
+        """
+        self._setup_flat_responses(mock_cx, [
+            files_list_response([]),
+        ])
+        list(mock_drive.walk(
+            'TestDrive', flat=True, paged=True,
+            page_token='resume_here'))
+        call_kwargs = (mock_cx.files.return_value
+                       .list.call_args_list[0][1])
+        assert call_kwargs['pageToken'] == 'resume_here'
+
+    def test_walk_flat_paged_custom_page_size(
+        self, mock_drive, mock_cx,
+    ):
+        """Verify page_size kwarg overrides the default 1000.
+        """
+        self._setup_flat_responses(mock_cx, [
+            files_list_response([]),
+        ])
+        list(mock_drive.walk(
+            'TestDrive', flat=True, paged=True, page_size=200))
+        call_kwargs = (mock_cx.files.return_value
+                       .list.call_args[1])
+        assert call_kwargs['pageSize'] == 200
+
+    def test_walk_paged_requires_flat(self, mock_drive):
+        """Verify paged=True without flat=True raises ValueError.
+        """
+        with pytest.raises(
+            ValueError, match='paged=True requires flat=True',
+        ):
+            list(mock_drive.walk(
+                'TestDrive', recursive=True, paged=True))
+
+    def test_walk_flat_paged_default_yields_entries_directly(
+        self, mock_drive, mock_cx,
+    ):
+        """Verify paged=False (default) preserves existing behavior.
+        """
+        self._setup_flat_responses(mock_cx, [
+            files_list_response([
+                {**folder_entry('SEC', 'folder_sec'),
+                 'parents': ['root123']},
+                {**file_entry('a.htm', 'id_a', 'text/html'),
+                 'parents': ['folder_sec']},
+            ]),
+        ])
+        results = list(mock_drive.walk(
+            'TestDrive/SEC', flat=True))
+        assert results == ['TestDrive/SEC/a.htm']
+
 
 class TestDelete:
     """Tests for delete() method.

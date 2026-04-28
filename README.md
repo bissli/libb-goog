@@ -188,6 +188,21 @@ for filepath in drive.walk('ClientFiles/deliverables', recursive=True):
 for filepath in drive.walk('SharedDrive/Documents', recursive=True, flat=True):
     print(filepath)
 
+# Resumable flat walk: yield (entries, next_page_token) per page so the
+# caller can persist the token and resume after a crash. flat=True only.
+token = load_cursor() or None
+for entries, next_token in drive.walk(
+        'SharedDrive/Documents', flat=True, paged=True,
+        page_token=token, detail=True):
+    for entry in entries:
+        process(entry)
+    save_cursor(next_token)
+    if next_token is None:
+        break
+# Note: a file whose parent folder appears on a later page is skipped on
+# this pass; it lands on a subsequent walk. Pair with idempotent
+# registration (e.g. content_sha) for eventual consistency.
+
 # Move a file
 drive.move('SharedDrive/Inbox/file.pdf', 'SharedDrive/Archive')
 

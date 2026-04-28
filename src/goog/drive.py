@@ -325,12 +325,33 @@ class Drive(Context):
     def walk(self, folder: str = '/', recursive: bool = False,
              links: bool = False, ctime: bool = False, mtime: bool = False,
              since: str | None = None, exclude_trashed: bool = True,
-             detail: bool = False, flat: bool = False) -> Any:
+             detail: bool = False, flat: bool = False,
+             *, paged: bool = False, page_token: str | None = None,
+             page_size: int = 1000) -> Any:
         """List files in Drive folder by path, optionally recursive.
+
+        When ``paged=True`` (requires ``flat=True``), yields
+        ``(entries_list, next_page_token)`` per Drive list page
+        instead of yielding individual entries. Caller persists
+        the token to resume after a crash; pass it back via
+        ``page_token`` on the next call. Files whose parent
+        folder appears on a later page are skipped this run --
+        they appear on a subsequent walk (idempotent registration
+        in the caller handles eventual consistency).
         """
+        if paged and not flat:
+            raise ValueError('paged=True requires flat=True')
         if detail:
             ctime = True
             mtime = True
+        if paged:
+            yield from self._walk_flat_paged(
+                folder, detail=detail,
+                exclude_trashed=exclude_trashed,
+                links=links, ctime=ctime, mtime=mtime,
+                since=since, page_token=page_token,
+                page_size=page_size)
+            return
         if flat:
             yield from self._walk_flat(
                 folder, detail=detail,
@@ -496,6 +517,127 @@ class Drive(Context):
                 yield entry
             else:
                 yield filepath
+
+    def _walk_flat_paged(
+        self, folder: str = '/',
+        *,
+        page_token: str | None = None,
+        page_size: int = 1000,
+        detail: bool = False,
+        exclude_trashed: bool = True,
+        links: bool = False,
+        ctime: bool = False,
+        mtime: bool = False,
+        since: str | None = None,
+    ) -> Any:
+        """Page-at-a-time flat walk yielding (entries, next_page_token).
+
+        Caller-driven pagination so a long walk can checkpoint and
+        resume. ``folder_map`` accumulates within a single call
+        only; on resume (page_token != None) it starts empty,
+        which means files whose parent folder arrived on an
+        earlier page are unresolvable and skipped this run. The
+        caller's idempotent registration (content_sha / file_id)
+        plus a subsequent full walk recovers the misses.
+        """
+        if detail:
+            ctime = True
+            mtime = True
+        root_parts = folder.strip('/').split('/')
+        root_name = root_parts[0] if root_parts else None
+        drive_id = (self._rootid.get(root_name)
+                    if root_name else None)
+
+        folder_map: dict[str, tuple[str, str | None]] = {}
+        rootid_reverse = {v: k for k, v in self._rootid.items()}
+        prefix = folder.rstrip('/') + '/'
+
+        q_parts = []
+        if exclude_trashed:
+            q_parts.append('trashed=false')
+        if since:
+            q_parts.append(f"modifiedTime>='{since}'")
+        q = ' and '.join(q_parts) if q_parts else None
+
+        _file_fields = ['id', 'name', 'mimeType', 'parents']
+        if links:
+            _file_fields.append('webContentLink')
+        if ctime:
+            _file_fields.append('createdTime')
+        if mtime:
+            _file_fields.append('modifiedTime')
+        fields = (
+            f"nextPageToken, files({', '.join(_file_fields)})")
+
+        def _build_path(
+            name: str, parent_id: str | None,
+        ) -> str | None:
+            segments = [name]
+            pid = parent_id
+            for _ in range(50):
+                if pid is None:
+                    return None
+                if pid in rootid_reverse:
+                    segments.append(rootid_reverse[pid])
+                    segments.reverse()
+                    return posixpath.join(*segments)
+                if pid not in folder_map:
+                    return None
+                fname, pid = folder_map[pid]
+                segments.append(fname)
+            return None
+
+        tok = page_token
+        while True:
+            param: dict[str, Any] = dict(
+                fields=fields, pageToken=tok,
+                pageSize=page_size, **SHARED_DRIVE_EXTRA)
+            if drive_id:
+                param['corpora'] = 'drive'
+                param['driveId'] = drive_id
+            if q:
+                param['q'] = q
+            resp = self.cx.files().list(**param).execute(
+                num_retries=5)
+            page = resp.get('files', [])
+            page_files = []
+            for f in page:
+                parent = (f.get('parents') or [None])[0]
+                if f['mimeType'] == FOLDER_MIME:
+                    folder_map[f['id']] = (f['name'], parent)
+                else:
+                    page_files.append(f)
+            next_tok = resp.get('nextPageToken')
+
+            entries: list = []
+            for f in page_files:
+                parent = (f.get('parents') or [None])[0]
+                filepath = _build_path(f['name'], parent)
+                if filepath is None:
+                    continue
+                if not filepath.startswith(prefix):
+                    continue
+                if detail:
+                    entry = {
+                        'path': filepath, 'id': f['id'],
+                        'name': f['name'],
+                        'mimeType': f['mimeType']}
+                    if links:
+                        entry['webContentLink'] = f.get(
+                            'webContentLink')
+                    if ctime:
+                        entry['createdTime'] = f.get(
+                            'createdTime')
+                    if mtime:
+                        entry['modifiedTime'] = f.get(
+                            'modifiedTime')
+                    entries.append(entry)
+                else:
+                    entries.append(filepath)
+            yield entries, next_tok
+            tok = next_tok
+            if tok is None:
+                break
 
     def search(self, query: str | None = None, *,
                folder: str | None = None,
