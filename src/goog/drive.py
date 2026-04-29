@@ -755,7 +755,7 @@ class Drive(Context):
             resp = self.cx.files().get(
                 fileId=file_id,
                 fields='name, parents',
-                **SHARED_DRIVE_EXTRA,
+                supportsAllDrives=True,
             ).execute(num_retries=5)
         except HttpError as exc:
             if exc.resp.status == 404:
