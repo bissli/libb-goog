@@ -732,10 +732,12 @@ class Drive(Context):
         Results are cached for 30 minutes matching _resolve_segment.
         """
         try:
+            # files().get() rejects includeItemsFromAllDrives; that
+            # kwarg is valid only on files().list() / changes().list().
             resp = self.cx.files().get(
                 fileId=folder_id,
                 fields='name, parents',
-                **SHARED_DRIVE_EXTRA,
+                supportsAllDrives=True,
             ).execute(num_retries=5)
         except HttpError as exc:
             if exc.resp.status == 404:
