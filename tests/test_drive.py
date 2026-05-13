@@ -578,6 +578,93 @@ class TestWalkFlat:
             'TestDrive/SEC', flat=True))
         assert results == ['TestDrive/SEC/a.htm']
 
+    def test_walk_flat_since_keeps_files_under_old_folders(
+        self, mock_drive, mock_cx,
+    ):
+        """Verify since filter doesn't drop files whose ancestor
+        folders predate the since timestamp.
+
+        Drive's q filter applies to BOTH files and folders. With
+        a single combined query, folders unchanged in the window
+        are excluded from the response, leaving folder_map without
+        the entries needed for parent-path resolution. Files inside
+        those folders then get silently dropped.
+
+        The fix issues two queries when since is set: folders
+        without the modifiedTime filter (so the map is complete),
+        files with it.
+        """
+        self._setup_flat_responses(mock_cx, [
+            files_list_response([
+                {**folder_entry('SEC', 'folder_sec'),
+                 'parents': ['root123']},
+                {**folder_entry('AAPL', 'folder_aapl'),
+                 'parents': ['folder_sec']},
+            ]),
+            files_list_response([
+                {**file_entry(
+                    'recent.htm', 'id_recent', 'text/html',
+                    modifiedTime='2026-05-10T00:00:00.000Z'),
+                 'parents': ['folder_aapl']},
+            ]),
+        ])
+        results = list(mock_drive.walk(
+            'TestDrive/SEC', recursive=True, flat=True,
+            since='2026-05-04T00:00:00Z'))
+        assert results == ['TestDrive/SEC/AAPL/recent.htm']
+
+    def test_walk_flat_since_splits_folder_and_file_queries(
+        self, mock_drive, mock_cx,
+    ):
+        """Verify since-mode issues two queries with disjoint filters.
+
+        The folders-query must contain a mimeType=folder predicate
+        but NOT modifiedTime. The files-query must contain a
+        not-folder predicate AND modifiedTime.
+        """
+        self._setup_flat_responses(mock_cx, [
+            files_list_response([]),
+            files_list_response([]),
+        ])
+        list(mock_drive.walk(
+            'TestDrive', recursive=True, flat=True,
+            since='2026-05-04T00:00:00Z'))
+        calls = (mock_cx.files.return_value
+                 .list.call_args_list)
+        assert len(calls) >= 2
+        folder_q = calls[0][1]['q']
+        file_q = calls[1][1]['q']
+        assert FOLDER_MIME in folder_q
+        assert 'modifiedTime' not in folder_q
+        assert FOLDER_MIME in file_q
+        assert "modifiedTime>='2026-05-04T00:00:00Z'" in file_q
+
+    def test_walk_flat_since_still_filters_old_files(
+        self, mock_drive, mock_cx,
+    ):
+        """Verify files modified before since are excluded.
+
+        The server-side q filter on the files-query continues to
+        bound the result set -- the split-query fix doesn't expand
+        the file scope.
+        """
+        self._setup_flat_responses(mock_cx, [
+            files_list_response([
+                {**folder_entry('SEC', 'folder_sec'),
+                 'parents': ['root123']},
+            ]),
+            files_list_response([
+                {**file_entry(
+                    'recent.htm', 'id_recent', 'text/html',
+                    modifiedTime='2026-05-10T00:00:00.000Z'),
+                 'parents': ['folder_sec']},
+            ]),
+        ])
+        results = list(mock_drive.walk(
+            'TestDrive/SEC', recursive=True, flat=True,
+            since='2026-05-04T00:00:00Z'))
+        assert results == ['TestDrive/SEC/recent.htm']
+
 
 class TestDelete:
     """Tests for delete() method.
