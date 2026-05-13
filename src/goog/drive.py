@@ -372,7 +372,7 @@ class Drive(Context):
         folderid = self.id(folder)
         q = f"'{folderid}' in parents"
         if since:
-            q = f'{q} and modifiedTime>={since}'
+            q = f"{q} and modifiedTime>='{since}'"
         if exclude_trashed:
             q = f'{q} and trashed=false'
         tok = None
@@ -422,6 +422,14 @@ class Drive(Context):
 
         Much faster than per-folder walk for large trees:
         O(total_files/1000) API calls instead of O(num_folders).
+
+        When ``since`` is set, two passes are issued: one for
+        folders (no ``modifiedTime`` filter, so the folder map
+        stays complete) and one for files (with the filter). The
+        Drive ``q`` filter applies to every entry in the response,
+        so a single combined query would drop folders unchanged
+        in the window and break parent-path resolution for the
+        files inside them.
         """
         if detail:
             ctime = True
@@ -434,13 +442,6 @@ class Drive(Context):
         folder_map: dict[str, tuple[str, str | None]] = {}
         files: list[dict] = []
 
-        q_parts = []
-        if exclude_trashed:
-            q_parts.append('trashed=false')
-        if since:
-            q_parts.append(f"modifiedTime>='{since}'")
-        q = ' and '.join(q_parts) if q_parts else None
-        tok = None
         _file_fields = ['id', 'name', 'mimeType', 'parents']
         if links:
             _file_fields.append('webContentLink')
@@ -449,29 +450,55 @@ class Drive(Context):
         if mtime:
             _file_fields.append('modifiedTime')
         fields = f"nextPageToken, files({', '.join(_file_fields)})"
-        total_fetched = 0
-        while True:
-            param: dict[str, Any] = dict(
-                fields=fields, pageToken=tok, pageSize=1000,
-                **SHARED_DRIVE_EXTRA)
-            if drive_id:
-                param['corpora'] = 'drive'
-                param['driveId'] = drive_id
-            if q:
-                param['q'] = q
-            resp = self.cx.files().list(**param).execute(
-                num_retries=5)
-            page = resp.get('files', [])
-            total_fetched += len(page)
+
+        def _paged_list(q: str | None) -> list[dict]:
+            out: list[dict] = []
+            tok = None
+            while True:
+                param: dict[str, Any] = dict(
+                    fields=fields, pageToken=tok, pageSize=1000,
+                    **SHARED_DRIVE_EXTRA)
+                if drive_id:
+                    param['corpora'] = 'drive'
+                    param['driveId'] = drive_id
+                if q:
+                    param['q'] = q
+                resp = self.cx.files().list(**param).execute(
+                    num_retries=5)
+                out.extend(resp.get('files', []))
+                tok = resp.get('nextPageToken')
+                if tok is None:
+                    break
+            return out
+
+        if since:
+            folder_q_parts = [f"mimeType='{FOLDER_MIME}'"]
+            file_q_parts = [
+                f"mimeType!='{FOLDER_MIME}'",
+                f"modifiedTime>='{since}'"]
+            if exclude_trashed:
+                folder_q_parts.append('trashed=false')
+                file_q_parts.append('trashed=false')
+            folder_q = ' and '.join(folder_q_parts)
+            file_q = ' and '.join(file_q_parts)
+            for f in _paged_list(folder_q):
+                parent = (f.get('parents') or [None])[0]
+                folder_map[f['id']] = (f['name'], parent)
+            files = _paged_list(file_q)
+            total_fetched = len(folder_map) + len(files)
+        else:
+            q_parts = []
+            if exclude_trashed:
+                q_parts.append('trashed=false')
+            q = ' and '.join(q_parts) if q_parts else None
+            page = _paged_list(q)
+            total_fetched = len(page)
             for f in page:
                 parent = (f.get('parents') or [None])[0]
                 if f['mimeType'] == FOLDER_MIME:
                     folder_map[f['id']] = (f['name'], parent)
                 else:
                     files.append(f)
-            tok = resp.get('nextPageToken')
-            if tok is None:
-                break
         logger.info(
             f'walk(flat): {len(files)} files, '
             f'{len(folder_map)} folders '
@@ -541,6 +568,14 @@ class Drive(Context):
         earlier page are unresolvable and skipped this run. The
         caller's idempotent registration (content_sha / file_id)
         plus a subsequent full walk recovers the misses.
+
+        When ``since`` is set, every page-call pre-fetches all
+        folders (unfiltered by modifiedTime) so the file query --
+        which DOES carry the since filter -- can resolve paths
+        through ancestors unchanged in the window. Drive's q
+        filter applies to all entry types; a single combined
+        query would drop folders unchanged in the window and
+        break path resolution.
         """
         if detail:
             ctime = True
@@ -554,12 +589,18 @@ class Drive(Context):
         rootid_reverse = {v: k for k, v in self._rootid.items()}
         prefix = folder.rstrip('/') + '/'
 
-        q_parts = []
-        if exclude_trashed:
-            q_parts.append('trashed=false')
         if since:
-            q_parts.append(f"modifiedTime>='{since}'")
-        q = ' and '.join(q_parts) if q_parts else None
+            file_q_parts = [
+                f"mimeType!='{FOLDER_MIME}'",
+                f"modifiedTime>='{since}'"]
+            if exclude_trashed:
+                file_q_parts.append('trashed=false')
+            q = ' and '.join(file_q_parts)
+        else:
+            q_parts = []
+            if exclude_trashed:
+                q_parts.append('trashed=false')
+            q = ' and '.join(q_parts) if q_parts else None
 
         _file_fields = ['id', 'name', 'mimeType', 'parents']
         if links:
@@ -588,6 +629,29 @@ class Drive(Context):
                 fname, pid = folder_map[pid]
                 segments.append(fname)
             return None
+
+        if since:
+            folder_q_parts = [f"mimeType='{FOLDER_MIME}'"]
+            if exclude_trashed:
+                folder_q_parts.append('trashed=false')
+            folder_q = ' and '.join(folder_q_parts)
+            folder_tok = None
+            while True:
+                fparam: dict[str, Any] = dict(
+                    fields=fields, pageToken=folder_tok,
+                    pageSize=page_size, **SHARED_DRIVE_EXTRA)
+                if drive_id:
+                    fparam['corpora'] = 'drive'
+                    fparam['driveId'] = drive_id
+                fparam['q'] = folder_q
+                fresp = self.cx.files().list(**fparam).execute(
+                    num_retries=5)
+                for f in fresp.get('files', []):
+                    parent = (f.get('parents') or [None])[0]
+                    folder_map[f['id']] = (f['name'], parent)
+                folder_tok = fresp.get('nextPageToken')
+                if folder_tok is None:
+                    break
 
         tok = page_token
         while True:
