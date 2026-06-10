@@ -5,6 +5,7 @@ delete, move, copy, search, export, and cache behavior by mocking self.cx
 (Discovery API service).
 """
 import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1375,6 +1376,8 @@ class TestRead:
         files = mock_cx.files.return_value
         file_resp = files_list_response([file_entry('data.bin', 'file_data')])
         files.list.return_value.execute.return_value = file_resp
+        files.get.return_value.execute.return_value = {
+            'name': 'data.bin', 'mimeType': 'application/octet-stream'}
 
         content = b'hello world'
 
@@ -1429,6 +1432,51 @@ class TestRead:
         with pytest.raises(TypeError, match='file_id'):
             mock_drive.read('/x/y', file_id='abc')
 
+    def test_read_routes_native_file_to_export(self, mock_drive, mock_cx):
+        """A Google-native file exports up front; get_media never fires.
+
+        get_media on Sheets/Docs/Slides 403s with fileNotDownloadable,
+        so read() must route them through export_media instead of
+        round-tripping into that error.
+        """
+        files = mock_cx.files.return_value
+        files.get.return_value.execute.return_value = {
+            'name': 'Corp Actions',
+            'mimeType': 'application/vnd.google-apps.spreadsheet'}
+
+        content = b'xlsx-bytes'
+
+        with patch('goog.drive.MediaIoBaseDownload') as mock_dl:
+            mock_instance = MagicMock()
+            mock_instance.next_chunk.return_value = (None, True)
+
+            def init_side_effect(fh, request):
+                fh.write(content)
+                return mock_instance
+
+            mock_dl.side_effect = init_side_effect
+            result = mock_drive.read(file_id='sheet123')
+
+        files.get_media.assert_not_called()
+        files.export_media.assert_called_once_with(
+            fileId='sheet123',
+            mimeType='application/vnd.openxmlformats-officedocument'
+                     '.spreadsheetml.sheet')
+        assert result.read() == content
+
+    def test_read_native_without_default_export_raises(
+            self, mock_drive, mock_cx):
+        """A native type with no default export mapping raises ValueError.
+        """
+        files = mock_cx.files.return_value
+        files.get.return_value.execute.return_value = {
+            'name': 'shortcut',
+            'mimeType': 'application/vnd.google-apps.shortcut'}
+
+        with pytest.raises(ValueError, match='No default export type'):
+            mock_drive.read(file_id='cut123')
+        files.get_media.assert_not_called()
+
 
 class TestDownload:
     """Tests for download() method.
@@ -1440,6 +1488,8 @@ class TestDownload:
         files = mock_cx.files.return_value
         file_resp = files_list_response([file_entry('report.pdf', 'file_report')])
         files.list.return_value.execute.return_value = file_resp
+        files.get.return_value.execute.return_value = {
+            'name': 'report.pdf', 'mimeType': 'application/pdf'}
 
         with patch('goog.drive.MediaIoBaseDownload') as mock_dl:
             mock_instance = MagicMock()
@@ -1459,6 +1509,35 @@ class TestDownload:
         mock_drive._tmpdir = None
         with pytest.raises(ValueError, match='directory required'):
             mock_drive.download('/TestDrive/report.pdf')
+
+    def test_download_native_file_writes_exported_bytes(
+            self, mock_drive, mock_cx, tmp_path):
+        """A Google-native file downloads via export, not get_media.
+        """
+        files = mock_cx.files.return_value
+        file_resp = files_list_response([file_entry('Plan', 'file_plan')])
+        files.list.return_value.execute.return_value = file_resp
+        files.get.return_value.execute.return_value = {
+            'name': 'Plan',
+            'mimeType': 'application/vnd.google-apps.document'}
+
+        content = b'docx-bytes'
+
+        with patch('goog.drive.MediaIoBaseDownload') as mock_dl:
+            mock_instance = MagicMock()
+            mock_instance.next_chunk.return_value = (None, True)
+
+            def init_side_effect(fh, request):
+                fh.write(content)
+                return mock_instance
+
+            mock_dl.side_effect = init_side_effect
+            result = mock_drive.download(
+                '/TestDrive/Plan', directory=str(tmp_path))
+
+        files.get_media.assert_not_called()
+        assert result is not None
+        assert Path(result).read_bytes() == content
 
 
 class TestExport:
