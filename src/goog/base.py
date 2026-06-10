@@ -83,6 +83,17 @@ def is_rate_limit(exc: HttpError) -> bool:
     return False
 
 
+def is_failed_precondition(exc: HttpError) -> bool:
+    """Check if an HttpError is a 400 failedPrecondition response.
+    """
+    if exc.resp.status != 400:
+        return False
+    details = getattr(exc, 'error_details', None)
+    if not isinstance(details, list):
+        return False
+    return any(d.get('reason') == 'failedPrecondition' for d in details)
+
+
 def clean_filename(fname: str) -> str:
     """Clean filename by escaping single quotes.
     """

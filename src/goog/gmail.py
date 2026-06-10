@@ -3,6 +3,7 @@
 import base64
 import email
 import logging
+import time
 from collections.abc import Generator
 from email.mime.audio import MIMEAudio
 from email.mime.base import MIMEBase
@@ -14,11 +15,14 @@ from typing import Any
 
 import filetype
 from apiclient import errors
-from goog.base import Context, get_settings
+from goog.base import Context, get_settings, is_failed_precondition
 
 import mail
 
 logger = logging.getLogger(__name__)
+
+PRECOND_RETRIES = 3
+PRECOND_BACKOFF = 2
 
 
 class Gmail(Context, mail.MailClient):
@@ -64,11 +68,21 @@ class Gmail(Context, mail.MailClient):
         res = self.list_emails(**kw)
         while messages := res.get('messages'):
             for row in messages:
-                try:
-                    param = {'userId': self.account, 'id': row['id'], 'format': 'raw'}
-                    data = self.cx.users().messages().get(**param).execute(num_retries=3)
-                except errors.HttpError as exc:
-                    logger.error(f"API error fetching message {row['id']}: {exc}")
+                data = None
+                for attempt in range(PRECOND_RETRIES + 1):
+                    try:
+                        param = {'userId': self.account, 'id': row['id'], 'format': 'raw'}
+                        data = self.cx.users().messages().get(**param).execute(num_retries=3)
+                        break
+                    except errors.HttpError as exc:
+                        if is_failed_precondition(exc) and attempt < PRECOND_RETRIES:
+                            delay = PRECOND_BACKOFF * 2 ** attempt
+                            logger.warning(f"failedPrecondition {row['id']}, retry {attempt + 1}/{PRECOND_RETRIES}")
+                            time.sleep(delay)
+                            continue
+                        logger.error(f"API error fetching message {row['id']}: {exc}")
+                        break
+                if data is None:
                     continue
                 logger.info(data['snippet'].encode('ascii', errors='ignore').decode(errors='ignore'))
                 raw = base64.urlsafe_b64decode(data['raw'].encode('ascii'))

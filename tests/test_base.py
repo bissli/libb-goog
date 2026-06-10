@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import goog.base
 import pytest
-from goog.base import Context, is_rate_limit
+from goog.base import Context, is_failed_precondition, is_rate_limit
 from tests.fixtures.drive_responses import http_error_from_fixture
 
 
@@ -131,3 +131,47 @@ class TestIsRateLimit:
         exc = MagicMock()
         exc.resp = resp
         assert is_rate_limit(exc) is False
+
+
+class TestIsFailedPrecondition:
+    """Tests for is_failed_precondition() classifier.
+    """
+
+    def test_400_failed_precondition(self):
+        """Verify 400 with failedPrecondition reason is classified.
+        """
+        resp = MagicMock()
+        resp.status = 400
+        content = b'{"error": {"code": 400, "message": "Precondition check failed.", "errors": [{"reason": "failedPrecondition", "domain": "global"}]}}'
+        from googleapiclient.errors import HttpError
+        exc = HttpError(resp, content)
+        assert is_failed_precondition(exc) is True
+
+    def test_400_other_reason_not_failed_precondition(self):
+        """Verify 400 with a different reason is not classified.
+        """
+        resp = MagicMock()
+        resp.status = 400
+        content = b'{"error": {"code": 400, "message": "Bad Request", "errors": [{"reason": "invalidArgument"}]}}'
+        from googleapiclient.errors import HttpError
+        exc = HttpError(resp, content)
+        assert is_failed_precondition(exc) is False
+
+    def test_400_no_error_details_not_failed_precondition(self):
+        """Verify 400 with no error details does not crash.
+        """
+        resp = MagicMock()
+        resp.status = 400
+        content = b'{"error": {"code": 400, "message": "Bad Request"}}'
+        from googleapiclient.errors import HttpError
+        exc = HttpError(resp, content)
+        assert is_failed_precondition(exc) is False
+
+    def test_403_not_failed_precondition(self):
+        """Verify a non-400 status is not classified.
+        """
+        resp = MagicMock()
+        resp.status = 403
+        exc = MagicMock()
+        exc.resp = resp
+        assert is_failed_precondition(exc) is False
