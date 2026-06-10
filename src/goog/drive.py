@@ -100,13 +100,31 @@ class Drive(Context):
                 stacklevel=3
             )
 
-    def _name_for_id(self, file_id: str) -> str:
-        """Look up a file's name by its Drive file ID for progress display.
+    def _meta_for_id(self, file_id: str) -> dict:
+        """Look up a file's name and mimeType by its Drive file ID.
         """
-        meta = self.cx.files().get(
-            fileId=file_id, fields='name',
+        return self.cx.files().get(
+            fileId=file_id, fields='name, mimeType',
             supportsAllDrives=True).execute(num_retries=5)
-        return meta['name']
+
+    def _export_native(self, fileid: str, fname: str,
+                       source_type: str) -> io.BytesIO | None:
+        """Export a Google-native file; None when not Google-native.
+
+        Native Workspace files (Sheets, Docs, Slides) cannot be fetched
+        via ``get_media`` -- the API rejects them with 403
+        ``fileNotDownloadable`` -- so download/read route them through
+        ``export`` up front instead of round-tripping into that error.
+        """
+        if not source_type.startswith('application/vnd.google-apps'):
+            return None
+        export_mime = GOOGLE_EXPORT_DEFAULTS.get(source_type)
+        if not export_mime:
+            raise ValueError(
+                f'No default export type for {source_type}, '
+                f'specify mime_type explicitly')
+        logger.debug(f'Native Google file, exporting {fname}')
+        return self.export(file_id=fileid, mime_type=export_mime)
 
     def _get_file_id(self, folder: str, filename: str) -> str | None:
         """Get file ID by folder and filename (handles filenames with /).
@@ -198,6 +216,13 @@ class Drive(Context):
                 raise ValueError('directory required when not configured')
 
         topath = posixpath.join(Path(directory).resolve(), fname)
+        meta = self._meta_for_id(fileid)
+        exported = self._export_native(
+            fileid, fname, meta.get('mimeType', ''))
+        if exported is not None:
+            Path(topath).write_bytes(exported.read())
+            logger.info(f'Downloaded file {fname}')
+            return topath
         with Path(topath).open('wb') as f:
             request = self.cx.files().get_media(fileId=fileid)
             media = MediaIoBaseDownload(f, request)
@@ -234,9 +259,11 @@ class Drive(Context):
 
         if file_id is not None:
             fileid = file_id
-            fname = self._name_for_id(file_id)
+            meta = self._meta_for_id(file_id)
+            fname = meta['name']
         elif filepath is not None:
             fileid = self.id(filepath)
+            meta = self._meta_for_id(fileid)
             fname = Path(filepath).name
         else:
             if folder is None or filename is None:
@@ -245,7 +272,13 @@ class Drive(Context):
             fileid = self._get_file_id(folder, filename)
             if not fileid:
                 raise LookupError(f'{filename} not found in {folder}')
+            meta = self._meta_for_id(fileid)
             fname = filename
+
+        exported = self._export_native(
+            fileid, fname, meta.get('mimeType', ''))
+        if exported is not None:
+            return exported
 
         s = io.BytesIO()
         request = self.cx.files().get_media(fileId=fileid)
@@ -284,7 +317,7 @@ class Drive(Context):
 
         if file_id is not None:
             fileid = file_id
-            fname = self._name_for_id(file_id)
+            fname = self._meta_for_id(file_id)['name']
         elif filepath is not None:
             fileid = self.id(filepath)
             fname = Path(filepath).name
