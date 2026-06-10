@@ -1,8 +1,20 @@
 """Mock integration tests for Gmail module.
 """
 import base64
+from unittest.mock import MagicMock
 
 import pytest
+from goog.gmail import PRECOND_RETRIES
+
+
+def _precondition_error():
+    """Build a 400 failedPrecondition HttpError like Gmail returns for format=raw.
+    """
+    from googleapiclient.errors import HttpError
+    resp = MagicMock()
+    resp.status = 400
+    content = b'{"error": {"code": 400, "message": "Precondition check failed.", "errors": [{"reason": "failedPrecondition"}]}}'
+    return HttpError(resp, content)
 
 
 class TestBuildKw:
@@ -64,6 +76,62 @@ class TestGetEmails:
         }
         results = list(gmail.get_emails(q='subject:X'))
         assert len(results) == 2
+
+    def test_retries_failed_precondition_then_succeeds(self, gmail, mock_cx, monkeypatch):
+        """Verify a transient failedPrecondition is retried until the fetch succeeds.
+        """
+        monkeypatch.setattr('time.sleep', lambda *a: None)
+        messages = mock_cx.users.return_value.messages.return_value
+        raw_msg = b'From: a@b.com\r\nSubject: Late\r\n\r\nBody'
+        encoded = base64.urlsafe_b64encode(raw_msg).decode('ascii')
+        messages.list.return_value.execute.return_value = {
+            'resultSizeEstimate': 1,
+            'messages': [{'id': 'msg_1'}],
+        }
+        messages.get.return_value.execute.side_effect = [
+            _precondition_error(),
+            {'raw': encoded, 'snippet': 'Body'},
+            ]
+        results = list(gmail.get_emails(q='subject:Late'))
+        assert len(results) == 1
+        assert results[0]['Subject'] == 'Late'
+        assert messages.get.return_value.execute.call_count == 2
+
+    def test_persistent_failed_precondition_drops_only_that_message(self, gmail, mock_cx, monkeypatch):
+        """Verify a message failing every retry is skipped without blocking the rest of the batch.
+        """
+        monkeypatch.setattr('time.sleep', lambda *a: None)
+        messages = mock_cx.users.return_value.messages.return_value
+        raw_msg = b'From: a@b.com\r\nSubject: Good\r\n\r\nBody'
+        encoded = base64.urlsafe_b64encode(raw_msg).decode('ascii')
+        messages.list.return_value.execute.return_value = {
+            'resultSizeEstimate': 2,
+            'messages': [{'id': 'bad'}, {'id': 'good'}],
+        }
+        messages.get.return_value.execute.side_effect = (
+            [_precondition_error()] * (PRECOND_RETRIES + 1)
+            + [{'raw': encoded, 'snippet': 'Body'}])
+        results = list(gmail.get_emails(q='subject:Good'))
+        assert len(results) == 1
+        assert results[0]['Subject'] == 'Good'
+
+    def test_non_precondition_error_not_retried(self, gmail, mock_cx, monkeypatch):
+        """Verify a non-precondition HttpError is dropped without retrying.
+        """
+        from googleapiclient.errors import HttpError
+        monkeypatch.setattr('time.sleep', lambda *a: None)
+        messages = mock_cx.users.return_value.messages.return_value
+        messages.list.return_value.execute.return_value = {
+            'resultSizeEstimate': 1,
+            'messages': [{'id': 'msg_1'}],
+        }
+        resp = MagicMock()
+        resp.status = 404
+        messages.get.return_value.execute.side_effect = HttpError(
+            resp, b'{"error": {"code": 404, "message": "Not Found"}}')
+        results = list(gmail.get_emails(q='subject:x'))
+        assert results == []
+        assert messages.get.return_value.execute.call_count == 1
 
 
 class TestMarkAs:
